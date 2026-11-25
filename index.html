@@ -59,7 +59,15 @@ input[type=number],input[type=password],select{font:inherit;color:var(--fg);back
 .link{background:none;border:0;padding:4px 0;color:var(--muted);font-weight:500;text-decoration:underline;text-underline-offset:3px}
 .login{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
 .logic{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:8px}
-.logic h3{margin:0;font:600 12px var(--body);color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.logic h3,.speed h3,.follow h3{margin:0;font:600 12px var(--body);color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.speed,.follow{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:8px}
+.speed .row{flex-wrap:nowrap}
+.speed input[type=range]{flex:1;min-width:0;accent-color:var(--accent)}
+.speed output{font:600 14px var(--mono);font-variant-numeric:tabular-nums;min-width:5ch;text-align:right}
+.meter{position:relative;height:12px;background:var(--bg);border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.meter i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--accent)}
+.meter b{position:absolute;top:0;bottom:0;width:2px;left:50%;background:var(--fg)}
+.meter.hit{border-color:var(--ok);box-shadow:0 0 0 2px rgba(47,125,79,.35)}
 label.chk{display:flex;flex-direction:row;align-items:center;gap:8px;flex:0 0 auto;font-weight:500;font-size:13px;cursor:pointer}
 </style>
 </head>
@@ -97,6 +105,29 @@ label.chk{display:flex;flex-direction:row;align-items:center;gap:8px;flex:0 0 au
     </div>
     <div class="btns">
       <button id="cdBtn" aria-pressed="true" title="Mostra o nasconde la scritta «Si parte tra 3, 2, 1» sugli schermi di tutti">⏱ Conto 3-2-1 per tutti: sì</button>
+    </div>
+    <div class="speed">
+      <h3>Velocità del click</h3>
+      <div class="row">
+        <input type="range" id="rate" min="0.5" max="1.5" step="0.01" value="1" aria-label="Velocità del click" disabled>
+        <output id="rateLbl" for="rate">100%</output>
+        <button id="rateReset" disabled title="Torna alla velocità del brano">↺ 100%</button>
+      </div>
+      <p class="msg">Trascina per accelerare o rallentare il click di tutti. Si attiva quando il click suona o è in pausa; con Stop torna a 100%. Logic non cambia velocità.</p>
+    </div>
+    <div class="follow">
+      <h3>Segui un click esterno (microfono)</h3>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="folOn"> Segui il click esterno</label>
+        <label class="f">Soglia (più alta = meno sensibile)
+          <input type="range" id="folSens" min="2" max="15" step="0.5" value="5">
+        </label>
+        <label class="f">Ritardo microfono (ms)
+          <input type="number" id="folDelay" value="0" step="5">
+        </label>
+      </div>
+      <div class="meter" aria-hidden="true"><i id="folLv"></i><b id="folTh"></b></div>
+      <p class="msg" id="folMsg">Spento. Ascolta con il microfono un click esterno e regola la velocità perché lo segua.</p>
     </div>
     <div class="logic">
       <h3>Logic Pro (MIDI)</h3>
@@ -336,7 +367,7 @@ function draw(t,idle){
   g.textAlign="right"; g.fillStyle="#ecebe7"; g.font=`700 ${8*u}px "Barlow Condensed", sans-serif`;
   g.fillText(bar.num+"/"+bar.den,W-6*u,12*u);
   g.fillStyle="#b5b2aa"; g.font=`600 ${4.4*u}px "JetBrains Mono", monospace`;
-  g.fillText("♩ = "+(+TL.bpmAt(Math.max(t,0)).toFixed(1)),W-6*u,19*u);
+  g.fillText("♩ = "+(+(TL.bpmAt(Math.max(t,0))*rateNow()).toFixed(1)),W-6*u,19*u);
   g.fillText(t<TL.off?"−"+fmt(TL.off-t):fmt(t-TL.off+TL.s0),W-6*u,H-9*u);
   // numero di battuta
   g.textAlign="center"; g.fillStyle="#8d8a82"; g.font=`500 ${4.5*u}px Inter, sans-serif`;
@@ -436,10 +467,10 @@ function prepInfo(tl,pos){
   return {barSec:Math.max(.2,end-bar.sec),offs:offs.length?offs:[0]};
 }
 // durata (ms) tra il comando e la partenza: una o più battute di preparazione intere
-function leadMs(from,countIn,pos){
+function leadMs(from,countIn,pos,rate){
   try{
     const tl=buildTimeline(midi,{firstBar:CONFIG.firstBar,compound:CONFIG.compoundDotted,cut:CONFIG.cutDouble?2:1,countIn,from,to:NaN});
-    const {barSec}=prepInfo(tl,pos), minLead=Math.max(0,+CONFIG.minLeadSeconds||0);
+    const {barSec:bs}=prepInfo(tl,pos), barSec=bs/(rate>0?rate:1), minLead=Math.max(0,+CONFIG.minLeadSeconds||0);
     return Math.round(barSec*Math.max(1,Math.ceil(minLead/barSec-1e-9))*1000);
   }catch(e){ return 4000 }
 }
@@ -452,6 +483,8 @@ function prepNumber(tl,pos,dt){
 }
 // Conto 3-2-1: lo decide la regia e viaggia nello stato condiviso (campo cd); se manca vale CONFIG.showCountdown
 const cdOn=()=>live&&typeof live.cd==="boolean"?live.cd:CONFIG.showCountdown!==false;
+// Velocità del click: la decide la regia e viaggia nello stato condiviso (campo rate, 1 = velocità del brano)
+function rateNow(){ const r=live&&+live.rate; return r>=.25&&r<=4?r:1 }
 function phase(){
   if(!live||live.status==="stopped"){
     const tl=timelineFor(clampBar(live?live.from:firstN),live?live.countIn:0);
@@ -461,10 +494,10 @@ function phase(){
   if(live.status==="paused") return {tl,t:live.anchorPos,idle:false,banner:"In pausa"};
   const dt=(serverNow()-live.anchorServer)/1000;
   if(dt<0){
-    const num=cdOn()?prepNumber(tl,live.anchorPos,dt):"";
+    const num=cdOn()?prepNumber(tl,live.anchorPos,dt*rateNow()):"";
     return live.anchorPos>0?{tl,t:live.anchorPos,banner:num?"Si riparte tra "+num:""}:{tl,idle:true,banner:num?"Si parte tra "+num:""};
   }
-  const t=live.anchorPos+dt;
+  const t=live.anchorPos+dt*rateNow();
   if(t>tl.endSec+.3) return {tl,t:tl.endSec-1e-3,banner:"Fine"};
   return {tl,t};
 }
@@ -501,7 +534,7 @@ function updateConn(){
 
 // ---------- Click su questo dispositivo ----------
 let actx=null, bus=null, schedSeq=null, nextBeat=0, audioOn=false;
-function onNewState(){ if(bus){try{bus.disconnect()}catch(e){}} bus=null; schedSeq=null }
+function onNewState(st){ if(bus){try{bus.disconnect()}catch(e){}} bus=null; schedSeq=null; if(st) folNewState(st) }
 function scheduler(){
   if(!audioOn||!midi||!live||live.status!=="playing"||clock.off==null) return;
   const tl=timelineFor(clampBar(live.from),live.countIn);
@@ -512,7 +545,7 @@ function scheduler(){
   }
   const now=serverNow();
   while(nextBeat<tl.beats.length){
-    const b=tl.beats[nextBeat], dt=(live.anchorServer+(b.sec-live.anchorPos)*1000-now)/1000;
+    const b=tl.beats[nextBeat], dt=(live.anchorServer+(b.sec-live.anchorPos)*1000/rateNow()-now)/1000;
     if(dt>.3) break;
     if(dt>-.03) click(actx,bus,actx.currentTime+Math.max(0,dt),b.beat===0,1);
     nextBeat++;
@@ -616,7 +649,7 @@ document.addEventListener("keyup",e=>{ if(e.code==="Space"&&!$("regia").hidden&&
 // ---------- Regia ----------
 let pw=""; try{ pw=sessionStorage.getItem("cb-regia-pw")||"" }catch(e){}
 let sending=false, seekDrag=false;
-function showRegia(on){ $("regia").hidden=!on; $("ctl").hidden=!on; $("regiaLink").hidden=on; $("loginBox").hidden=true; if(on){ renderBookmarks(); lgRestore() } else lgCancel() }
+function showRegia(on){ $("regia").hidden=!on; $("ctl").hidden=!on; $("regiaLink").hidden=on; $("loginBox").hidden=true; if(on){ renderBookmarks(); lgRestore() } else { lgCancel(); if(fol.on){ fol.on=false; $("folOn").checked=false; folStop() } } }
 // Comandi sul riquadro (solo regia): toccando il riquadro da fermo parte il Via, in pausa si riprende;
 // mentre suona un tocco mostra soltanto i comandi, così un tocco involontario non interrompe nulla.
 const stageEl=$("stage"); let ctlTimer=0;
@@ -634,7 +667,7 @@ $("pw").addEventListener("keydown",e=>{ if(e.key==="Enter") $("loginBtn").click(
 $("logoutBtn").onclick=()=>{ pw=""; try{sessionStorage.removeItem("cb-regia-pw")}catch(e){} showRegia(false) };
 function regiaMsg(t,err){ const m=$("regiaMsg"); m.textContent=t; m.className="msg"+(err?" err":"") }
 
-async function send(st,label,checkCd){
+async function send(st,label,checkKey){
   if(sending) return false; sending=true; let ok=false;
   st={...st}; if(typeof st.cd!=="boolean") st.cd=cdOn();   // ogni comando conserva la scelta sul conto 3-2-1
   regiaButtons();
@@ -646,7 +679,7 @@ async function send(st,label,checkCd){
       if(/password/i.test(j.error||"")){ pw=""; try{sessionStorage.removeItem("cb-regia-pw")}catch(e){} setTimeout(()=>{showRegia(false);$("loginBox").hidden=false;$("regiaLink").hidden=true},1200) }
     } else {
       ok=true; applyState(j.state);
-      if(checkCd&&!(j.state&&j.state.cd===st.cd)) regiaMsg("Inviato, ma lo script di Drive non salva questa impostazione: va aggiornato contabattute-drive.gs.",true);
+      if(checkKey&&!(j.state&&j.state[checkKey]===st[checkKey])) regiaMsg("Inviato, ma lo script di Drive non salva questa impostazione: va aggiornato contabattute-drive.gs.",true);
       else regiaMsg(label+": inviato a tutti.");
     }
   }catch(e){ regiaMsg("Comando non inviato: "+e.message,true) }
@@ -655,14 +688,161 @@ async function send(st,label,checkCd){
 }
 $("cdBtn").onclick=()=>{
   const v=!cdOn(), base=live?{...live}:{status:"stopped",from:firstN,countIn:ciVal()};
-  send({...base,cd:v},"Conto 3-2-1 "+(v?"attivo":"disattivato"),true);
+  send({...base,cd:v},"Conto 3-2-1 "+(v?"attivo":"disattivato"),"cd");
 };
-const startAt=(from,countIn,pos)=>Math.round(serverNow()+leadMs(from,countIn,pos));
+// ---------- Slider della velocità ----------
+// Cambiare velocità = nuova ancora: la posizione di adesso diventa il punto di partenza con la nuova velocità.
+// Tutti i dispositivi la ricevono entro qualche secondo e si ricalcolano sullo stesso orario del server.
+let rateWant=null, rateBusy=false;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function rateLabel(v){ $("rateLbl").textContent=Math.round(v*100)+"%" }
+async function applyRate(r){
+  while(sending) await sleep(60);
+  if(!live) return;
+  let st;
+  if(live.status==="playing"){
+    const now=serverNow(), dt=(now-live.anchorServer)/1000;
+    if(dt<0){ regiaMsg("Aspetta che parta il click per cambiare velocità.",true); return }
+    st={...live,anchorPos:live.anchorPos+dt*rateNow(),anchorServer:Math.round(now),rate:r};
+  } else if(live.status==="paused") st={...live,rate:r};
+  else return;
+  if(lgActive()&&r!==1) lgMsg("Logic non cambia velocità: finché la velocità non è 100% resta fuori sincrono dal click.",true);
+  await send(st,"Velocità "+Math.round(r*100)+"%","rate");
+}
+async function rateFlush(){
+  if(rateBusy) return; rateBusy=true;
+  try{ while(rateWant!==null){ const r=rateWant; rateWant=null; await applyRate(r) } }
+  finally{ rateBusy=false }
+}
+function rateRequest(v){ rateWant=v; rateLabel(v); rateFlush() }
+$("rate").addEventListener("input",()=>{ let v=+$("rate").value; if(Math.abs(v-1)<.015){ v=1; $("rate").value=1 } rateRequest(v) });
+$("rate").addEventListener("change",()=>$("rate").blur());
+$("rateReset").onclick=()=>{ $("rate").value=1; rateRequest(1) };
+// ---------- Segui un click esterno (microfono) ----------
+// Il microfono sente i colpi, un rilevatore (AudioWorklet, preciso al blocco di 2,7 ms) ne trova l'istante.
+// Ogni colpo viene abbinato al battito più vicino della pagina; una retta sui colpi recenti dà velocità e fase,
+// e la nuova velocità parte con lo stesso meccanismo dello slider (al massimo una volta ogni ~1,2 s).
+// Si assume un colpo esterno = un battito della pagina, e che si parta insieme sul primo battito.
+const WORKLET=`
+class ClickDet extends AudioWorkletProcessor{
+  constructor(){ super(); this.p=0; this.bg=0.002; this.sens=5; this.lastT=-1; this.prev=0; this.cnt=0;
+    this.port.onmessage=e=>{ if(e.data&&typeof e.data.sens==="number") this.sens=e.data.sens } }
+  process(inputs){
+    const x=inputs[0]&&inputs[0][0]; if(!x) return true;
+    let e=0, p=this.p;
+    for(let i=0;i<x.length;i++){ const d=x[i]-p; p=x[i]; e+=d*d }      // energia delle variazioni rapide: favorisce i colpi secchi
+    this.p=p;
+    const r=Math.sqrt(e/x.length), t=currentTime, thr=Math.max(this.bg*this.sens,0.006);
+    if(this.t0===undefined) this.t0=t; if(t-this.t0<0.3){ this.prev=r; return true }   // avvio: ignora i primi 0,3 s
+    if(r>thr&&r>this.prev*1.3&&t-this.lastT>0.08){ this.lastT=t; this.port.postMessage({on:t}) }
+    else if(r<=thr) this.bg=this.bg*0.995+r*0.005;                     // il rumore di fondo segue i momenti calmi
+    else this.bg+=(r-this.bg)*0.0005;                                   // e sale piano se il suono resta forte
+    this.prev=r;
+    if((this.cnt++&7)===0) this.port.postMessage({lv:r,bg:this.bg});
+    return true;
+  }
+}
+registerProcessor("click-det",ClickDet);`;
+const fol={on:false,ctx:null,stream:null,src:null,node:null,mute:null,loaded:false,hist:[],lastApply:0,myAnchor:null,
+  accepted:0,rejected:0,lv:0,bg:0,sens:5,rms:null};
+function folMsg(t,err){ const m=$("folMsg"); m.textContent=t; m.className="msg"+(err?" err":"") }
+function folMeter(){
+  const sc=v=>Math.min(100,Math.sqrt(Math.max(0,v))/Math.sqrt(.3)*100);
+  $("folLv").style.width=sc(fol.lv)+"%"; $("folTh").style.left=sc(Math.max(fol.bg*fol.sens,.006))+"%";
+}
+let folFlashT=0;
+function folFlash(){ const m=document.querySelector(".meter"); m.classList.add("hit"); clearTimeout(folFlashT); folFlashT=setTimeout(()=>m.classList.remove("hit"),130) }
+// battito più vicino alla posizione P (secondi di brano) e tolleranza: 40% della distanza dai battiti accanto
+function folNearest(tl,P){
+  const B=tl.beats; if(!B.length) return null;
+  let lo=0,hi=B.length-1; while(lo<hi){ const mid=(lo+hi+1)>>1; if(B[mid].sec<=P) lo=mid; else hi=mid-1 }
+  let k=lo; if(k+1<B.length&&Math.abs(B[k+1].sec-P)<Math.abs(B[k].sec-P)) k++;
+  const gp=k>0?B[k].sec-B[k-1].sec:Infinity, gn=k+1<B.length?B[k+1].sec-B[k].sec:Infinity, g=Math.min(gp,gn);
+  if(!isFinite(g)) return null;
+  return {sec:B[k].sec,err:P-B[k].sec,tol:.4*g};
+}
+// retta posizione/tempo sui colpi abbinati: velocità, posizione adesso e scarto
+function folFit(h,now){
+  const n=h.length; let mt=0,mb=0; for(const p of h){ mt+=p.ts; mb+=p.b } mt/=n; mb/=n;
+  let sxx=0,sxy=0; for(const p of h){ const x=(p.ts-mt)/1000; sxx+=x*x; sxy+=x*(p.b-mb) }
+  if(sxx<.5) return null;                                              // servono almeno ~1 s di colpi
+  const r=sxy/sxx; let se=0; for(const p of h){ const e=p.b-(mb+r*(p.ts-mt)/1000); se+=e*e }
+  return {r,pos:mb+r*(now-mt)/1000,rms:Math.sqrt(se/n)*1000/Math.max(r,.01)};
+}
+function folStatus(){
+  let t="In ascolto · colpi seguiti "+fol.accepted+(fol.rejected?" · scartati "+fol.rejected:"")+(fol.rms!=null?" · scarto "+Math.round(fol.rms)+" ms":"")+" · velocità "+Math.round(rateNow()*100)+"%";
+  if(fol.rejected>4&&fol.rejected>fol.accepted*2) t+=" — molti colpi scartati: controlla la soglia e che la partenza coincida con il primo battito";
+  folMsg(t);
+}
+function folOnset(on){
+  const perf=performance.now()-(fol.ctx.currentTime-on)*1000;
+  const ts=performance.timeOrigin+perf+(clock.off||0)-(+$("folDelay").value||0);   // istante del colpo, ora del server
+  folFlash();
+  if(!fol.on||!live||live.status!=="playing"||clock.off==null||ts<live.anchorServer) return;
+  const tl=timelineFor(clampBar(live.from),live.countIn);
+  const P=live.anchorPos+(ts-live.anchorServer)/1000*rateNow();
+  const nb=folNearest(tl,P);
+  if(!nb||Math.abs(nb.err)>nb.tol){ fol.rejected++; folStatus(); return }
+  fol.accepted++;
+  const h=fol.hist; h.push({ts,b:nb.sec,key:tlKey});
+  while(h.length&&(h[0].key!==tlKey||ts-h[0].ts>10000)) h.shift();
+  while(h.length>8) h.shift();
+  folTryApply(); folStatus();
+}
+function folTryApply(){
+  if(!fol.on||sending||rateBusy||Date.now()-fol.lastApply<1200||fol.hist.length<4||!live||live.status!=="playing") return;
+  const now=serverNow(), f=folFit(fol.hist,now); if(!f) return;
+  const r=Math.min(1.5,Math.max(.5,f.r)), cur=live.anchorPos+(now-live.anchorServer)/1000*rateNow();
+  fol.rms=f.rms;
+  if(Math.abs(r-rateNow())<.003&&Math.abs(f.pos-cur)<.008) return;
+  fol.lastApply=Date.now(); fol.myAnchor=Math.round(now);
+  if(lgActive()&&Math.abs(r-1)>.01) lgMsg("Logic non cambia velocità: finché il click esterno non è a velocità 100% resta fuori sincrono.",true);
+  send({...live,anchorPos:f.pos,anchorServer:fol.myAnchor,rate:r},"Segue il click esterno ("+Math.round(r*100)+"%)","rate");
+}
+// un comando nuovo (Via, Pausa, salto…) azzera i colpi raccolti; le correzioni fatte da qui no
+function folNewState(st){ if(st.status!=="playing"||st.anchorServer!==fol.myAnchor) fol.hist.length=0 }
+async function folStart(){
+  if(!window.isSecureContext||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    folMsg("Il microfono non è disponibile in questa pagina: serve un indirizzo https e Chrome o Edge, aperta direttamente (non dentro Google Sites).",true); return false }
+  try{ fol.stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}}) }
+  catch(e){ folMsg(e&&e.name==="NotAllowedError"?"Microfono non consentito: dai il permesso al browser (icona accanto all'indirizzo).":"Microfono non disponibile ("+((e&&e.name)||"errore")+").",true); return false }
+  try{
+    fol.ctx=fol.ctx||new (window.AudioContext||window.webkitAudioContext)(); await fol.ctx.resume();
+    if(!fol.loaded){ await fol.ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET],{type:"application/javascript"}))); fol.loaded=true }
+    fol.src=fol.ctx.createMediaStreamSource(fol.stream);
+    fol.node=new AudioWorkletNode(fol.ctx,"click-det",{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[1]});
+    fol.mute=fol.ctx.createGain(); fol.mute.gain.value=0;               // il nodo deve arrivare all'uscita per lavorare, ma senza suono
+    fol.src.connect(fol.node); fol.node.connect(fol.mute); fol.mute.connect(fol.ctx.destination);
+    fol.node.port.onmessage=e=>{ const m=e.data; if(m.lv!==undefined){ fol.lv=m.lv; fol.bg=m.bg; folMeter() } if(m.on!==undefined) folOnset(m.on) };
+    fol.node.port.postMessage({sens:fol.sens});
+    return true;
+  }catch(e){ folStop(); folMsg("Ascolto non avviato: "+e.message,true); return false }
+}
+function folStop(){
+  try{ fol.stream&&fol.stream.getTracks().forEach(t=>t.stop()) }catch(e){}
+  try{ if(fol.node){ fol.node.port.onmessage=null; fol.node.disconnect() } }catch(e){}
+  try{ fol.src&&fol.src.disconnect() }catch(e){}
+  try{ fol.mute&&fol.mute.disconnect() }catch(e){}
+  fol.stream=fol.node=fol.src=fol.mute=null; fol.hist.length=0; fol.lv=0; folMeter();
+}
+$("folOn").addEventListener("change",async()=>{
+  if($("folOn").checked){
+    fol.accepted=fol.rejected=0; fol.rms=null; fol.on=true;
+    if(!(await folStart())){ fol.on=false; $("folOn").checked=false; return }
+    if(audioOn) folMsg("In ascolto. Attenzione: il click di questa pagina è acceso e il microfono può sentirlo: spegnilo o usa le cuffie.",true);
+    else folMsg("In ascolto. Premi Via quando il click esterno sta per partire sul primo battito: dopo i primi 4 impulsi la pagina si aggancia da sola.");
+  } else { fol.on=false; folStop(); folMsg("Spento. Ascolta con il microfono un click esterno e regola la velocità perché lo segua.") }
+});
+$("folSens").addEventListener("input",()=>{ fol.sens=+$("folSens").value; lgSave("fsens",$("folSens").value); if(fol.node) fol.node.port.postMessage({sens:fol.sens}); folMeter() });
+$("folDelay").addEventListener("change",()=>{ lgSave("fdelay",$("folDelay").value); $("folDelay").blur() });
+{ const s=lgLoad("fsens"), d=lgLoad("fdelay"); if(s!==null){ $("folSens").value=s; fol.sens=+s } if(d!==null) $("folDelay").value=d }
+const startAt=(from,countIn,pos,rate)=>Math.round(serverNow()+leadMs(from,countIn,pos,rate));
 const ciVal=()=>+$("countIn").value;
 function currentPos(){ const p=phase(); return p.idle?0:Math.max(0,p.t) }
 function goFrom(n){
   n=clampBar(n); const wasPlaying=live&&live.status==="playing";
-  const st={status:"playing",from:n,countIn:ciVal(),anchorPos:0,anchorServer:startAt(n,ciVal(),0)};
+  const rt=wasPlaying?rateNow():1;   // un salto di battuta mentre suona mantiene la velocità; una partenza nuova torna a 100%
+  const st={status:"playing",from:n,countIn:ciVal(),anchorPos:0,anchorServer:startAt(n,ciVal(),0,rt)}; if(rt!==1) st.rate=rt;
   if(wasPlaying){ if(lgActive()){ lgStopNow(); lgMsg("Salto di battuta: Logic fermato. Riposizionalo e premi di nuovo.",true) } }   // la pagina non sposta Logic
   else lgPlayAt(st.anchorServer);
   send(st,`Via dalla battuta ${n}`).then(ok=>{ if(!ok) lgStopNow() });
@@ -670,7 +850,7 @@ function goFrom(n){
 function setFrom(n){ n=clampBar(n); send({status:"stopped",from:n,countIn:ciVal()},`Pronti dalla battuta ${n}`) }
 $("goBtn").onclick=()=>{
   if(live&&live.status==="paused"){
-    const st={...live,status:"playing",anchorServer:startAt(clampBar(live.from),live.countIn,live.anchorPos)};
+    const st={...live,status:"playing",anchorServer:startAt(clampBar(live.from),live.countIn,live.anchorPos,rateNow())};
     lgPlayAt(st.anchorServer); send(st,"Ripresa").then(ok=>{ if(!ok) lgStopNow() });
   }
   else goFrom(parseInt($("from").value,10));
@@ -689,6 +869,9 @@ function seekLabel(n){ $("seekLbl").textContent=`Battuta ${n} di ${lastN}`; high
 function regiaButtons(){
   const st=live?live.status:"stopped";
   stageEl.classList.toggle("run",st==="playing");
+  const rs=$("rate"), canRate=!!live&&((st==="playing"&&serverNow()>=live.anchorServer)||st==="paused")&&!fol.on;
+  if(rs.disabled===canRate){ rs.disabled=!canRate; $("rateReset").disabled=!canRate }
+  if(document.activeElement!==rs&&!rateBusy&&rateWant===null){ const rv=rateNow(); if(+rs.value!==rv) rs.value=rv; rateLabel(rv) }
   const on=cdOn(), cb=$("cdBtn"), ct="⏱ Conto 3-2-1 per tutti: "+(on?"sì":"no");
   if(cb.textContent!==ct){ cb.textContent=ct; cb.setAttribute("aria-pressed",String(on)) }
   cb.disabled=sending;
