@@ -106,19 +106,13 @@ label.chk{display:flex;flex-direction:row;align-items:center;gap:8px;flex:0 0 au
     <div class="btns">
       <button id="cdBtn" aria-pressed="true" title="Mostra o nasconde la scritta «Si parte tra 3, 2, 1» sugli schermi di tutti">⏱ Conto 3-2-1 per tutti: sì</button>
     </div>
-    <div class="speed">
-      <h3>Velocità del click</h3>
-      <div class="row">
-        <input type="range" id="rate" min="0.5" max="1.5" step="0.01" value="1" aria-label="Velocità del click" disabled>
-        <output id="rateLbl" for="rate">100%</output>
-        <button id="rateReset" disabled title="Torna alla velocità del brano">↺ 100%</button>
-      </div>
-      <p class="msg">Trascina per accelerare o rallentare il click di tutti. Si attiva quando il click suona o è in pausa; con Stop torna a 100%. Logic non cambia velocità.</p>
-    </div>
     <div class="follow">
-      <h3>Segui un click esterno (microfono)</h3>
+      <h3>Partenza sul click esterno (microfono)</h3>
       <div class="row">
-        <label class="chk"><input type="checkbox" id="folOn"> Segui il click esterno</label>
+        <button type="button" class="primary" id="folArm">⏳ Aspetta il click esterno e parti</button>
+      </div>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="folOn"> Microfono acceso (per regolare la soglia)</label>
         <label class="f">Soglia (più alta = meno sensibile)
           <input type="range" id="folSens" min="2" max="15" step="0.5" value="5">
         </label>
@@ -126,11 +120,8 @@ label.chk{display:flex;flex-direction:row;align-items:center;gap:8px;flex:0 0 au
           <input type="number" id="folDelay" value="0" step="5">
         </label>
       </div>
-      <div class="row">
-        <button type="button" id="folArm">⏳ Aspetta il click esterno e parti</button>
-      </div>
       <div class="meter" aria-hidden="true"><i id="folLv"></i><b id="folTh"></b></div>
-      <p class="msg" id="folMsg">Spento. Ascolta con il microfono un click esterno e regola la velocità perché lo segua.</p>
+      <p class="msg" id="folMsg">Premi il pulsante: la pagina ascolta la battuta di preparazione del click esterno e, al quarto colpo, parte da sola insieme a Logic.</p>
     </div>
     <div class="logic">
       <h3>Logic Pro (MIDI)</h3>
@@ -537,7 +528,7 @@ function updateConn(){
 
 // ---------- Click su questo dispositivo ----------
 let actx=null, bus=null, schedSeq=null, nextBeat=0, audioOn=false;
-function onNewState(st){ if(bus){try{bus.disconnect()}catch(e){}} bus=null; schedSeq=null; if(st) folNewState(st) }
+function onNewState(st){ if(bus){try{bus.disconnect()}catch(e){}} bus=null; schedSeq=null; if(st&&fol.arm&&st.status==="playing") armOff("Un altro comando ha avviato la pagina: attesa annullata.") }
 function scheduler(){
   if(!audioOn||!midi||!live||live.status!=="playing"||clock.off==null) return;
   const tl=timelineFor(clampBar(live.from),live.countIn);
@@ -652,7 +643,7 @@ document.addEventListener("keyup",e=>{ if(e.code==="Space"&&!$("regia").hidden&&
 // ---------- Regia ----------
 let pw=""; try{ pw=sessionStorage.getItem("cb-regia-pw")||"" }catch(e){}
 let sending=false, seekDrag=false;
-function showRegia(on){ $("regia").hidden=!on; $("ctl").hidden=!on; $("regiaLink").hidden=on; $("loginBox").hidden=true; if(on){ renderBookmarks(); lgRestore() } else { lgCancel(); armOff(); if(fol.on){ fol.on=false; $("folOn").checked=false; folStop() } } }
+function showRegia(on){ $("regia").hidden=!on; $("ctl").hidden=!on; $("regiaLink").hidden=on; $("loginBox").hidden=true; if(on){ renderBookmarks(); lgRestore() } else { lgCancel(); armOff(); if(fol.on) micOff() } }
 // Comandi sul riquadro (solo regia): toccando il riquadro da fermo parte il Via, in pausa si riprende;
 // mentre suona un tocco mostra soltanto i comandi, così un tocco involontario non interrompe nulla.
 const stageEl=$("stage"); let ctlTimer=0;
@@ -696,36 +687,10 @@ $("cdBtn").onclick=()=>{
 // ---------- Slider della velocità ----------
 // Cambiare velocità = nuova ancora: la posizione di adesso diventa il punto di partenza con la nuova velocità.
 // Tutti i dispositivi la ricevono entro qualche secondo e si ricalcolano sullo stesso orario del server.
-let rateWant=null, rateBusy=false;
-const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-function rateLabel(v){ $("rateLbl").textContent=Math.round(v*100)+"%" }
-async function applyRate(r){
-  while(sending) await sleep(60);
-  if(!live) return;
-  let st;
-  if(live.status==="playing"){
-    const now=serverNow(), dt=(now-live.anchorServer)/1000;
-    if(dt<0){ regiaMsg("Aspetta che parta il click per cambiare velocità.",true); return }
-    st={...live,anchorPos:live.anchorPos+dt*rateNow(),anchorServer:Math.round(now),rate:r};
-  } else if(live.status==="paused") st={...live,rate:r};
-  else return;
-  if(lgActive()&&r!==1) lgMsg("Logic non cambia velocità: finché la velocità non è 100% resta fuori sincrono dal click.",true);
-  await send(st,"Velocità "+Math.round(r*100)+"%","rate");
-}
-async function rateFlush(){
-  if(rateBusy) return; rateBusy=true;
-  try{ while(rateWant!==null){ const r=rateWant; rateWant=null; await applyRate(r) } }
-  finally{ rateBusy=false }
-}
-function rateRequest(v){ rateWant=v; rateLabel(v); rateFlush() }
-$("rate").addEventListener("input",()=>{ let v=+$("rate").value; if(Math.abs(v-1)<.015){ v=1; $("rate").value=1 } rateRequest(v) });
-$("rate").addEventListener("change",()=>$("rate").blur());
-$("rateReset").onclick=()=>{ $("rate").value=1; rateRequest(1) };
-// ---------- Segui un click esterno (microfono) ----------
-// Il microfono sente i colpi, un rilevatore (AudioWorklet, preciso al blocco di 2,7 ms) ne trova l'istante.
-// Ogni colpo viene abbinato al battito più vicino della pagina; una retta sui colpi recenti dà velocità e fase,
-// e la nuova velocità parte con lo stesso meccanismo dello slider (al massimo una volta ogni ~1,2 s).
-// Si assume un colpo esterno = un battito della pagina, e che si parta insieme sul primo battito.
+// ---------- Partenza sul click esterno (microfono) ----------
+// La pagina resta ferma e ascolta la battuta di preparazione del click esterno (tanti colpi quanti i battiti della battuta: 4 in 4/4).
+// Dal passo dei colpi ricava l'istante del primo battito della musica e fa partire insieme pagina e Logic su quell'istante.
+// La velocità resta quella del brano, così Logic e pagina restano sempre sincronizzati.
 const WORKLET=`
 class ClickDet extends AudioWorkletProcessor{
   constructor(){ super(); this.p=0; this.bg=0.002; this.sens=5; this.lastT=-1; this.prev=0; this.cnt=0;
@@ -746,8 +711,8 @@ class ClickDet extends AudioWorkletProcessor{
   }
 }
 registerProcessor("click-det",ClickDet);`;
-const fol={arm:null,on:false,ctx:null,stream:null,src:null,node:null,mute:null,loaded:false,hist:[],lastApply:0,myAnchor:null,
-  accepted:0,rejected:0,lv:0,bg:0,sens:5,rms:null};
+const fol={arm:null,on:false,autoOn:false,ctx:null,stream:null,src:null,node:null,mute:null,loaded:false,lv:0,bg:0,sens:5};
+const FOL_IDLE="Premi il pulsante: la pagina ascolta la battuta di preparazione del click esterno e, al quarto colpo, parte da sola insieme a Logic.";
 function folMsg(t,err){ const m=$("folMsg"); m.textContent=t; m.className="msg"+(err?" err":"") }
 function folMeter(){
   const sc=v=>Math.min(100,Math.sqrt(Math.max(0,v))/Math.sqrt(.3)*100);
@@ -755,65 +720,15 @@ function folMeter(){
 }
 let folFlashT=0;
 function folFlash(){ const m=document.querySelector(".meter"); m.classList.add("hit"); clearTimeout(folFlashT); folFlashT=setTimeout(()=>m.classList.remove("hit"),130) }
-// battito più vicino alla posizione P (secondi di brano) e tolleranza: 40% della distanza dai battiti accanto
-function folNearest(tl,P){
-  const B=tl.beats; if(!B.length) return null;
-  let lo=0,hi=B.length-1; while(lo<hi){ const mid=(lo+hi+1)>>1; if(B[mid].sec<=P) lo=mid; else hi=mid-1 }
-  let k=lo; if(k+1<B.length&&Math.abs(B[k+1].sec-P)<Math.abs(B[k].sec-P)) k++;
-  const gp=k>0?B[k].sec-B[k-1].sec:Infinity, gn=k+1<B.length?B[k+1].sec-B[k].sec:Infinity, g=Math.min(gp,gn);
-  if(!isFinite(g)) return null;
-  return {sec:B[k].sec,err:P-B[k].sec,tol:.4*g};
-}
-// retta posizione/tempo sui colpi abbinati: velocità, posizione adesso e scarto
-function folFit(h,now){
-  const n=h.length; let mt=0,mb=0; for(const p of h){ mt+=p.ts; mb+=p.b } mt/=n; mb/=n;
-  let sxx=0,sxy=0; for(const p of h){ const x=(p.ts-mt)/1000; sxx+=x*x; sxy+=x*(p.b-mb) }
-  if(sxx<.5) return null;                                              // servono almeno ~1 s di colpi
-  const r=sxy/sxx; let se=0; for(const p of h){ const e=p.b-(mb+r*(p.ts-mt)/1000); se+=e*e }
-  return {r,pos:mb+r*(now-mt)/1000,rms:Math.sqrt(se/n)*1000/Math.max(r,.01)};
-}
-function folStatus(){
-  let t="In ascolto · colpi seguiti "+fol.accepted+(fol.rejected?" · scartati "+fol.rejected:"")+(fol.rms!=null?" · scarto "+Math.round(fol.rms)+" ms":"")+" · velocità "+Math.round(rateNow()*100)+"%";
-  if(fol.rejected>4&&fol.rejected>fol.accepted*2) t+=" — molti colpi scartati: controlla la soglia e che la partenza coincida con il primo battito";
-  folMsg(t);
+function armOff(msg){ if(!fol.arm) return; fol.arm=null; if(fol.autoOn) micOff(); regiaButtons(); folMsg(msg||FOL_IDLE) }
+function armNeed(){
+  try{ const tl=timelineFor(clampBar(parseInt($("from").value,10)||firstN),ciVal()); return Math.max(2,prepInfo(tl,0).offs.length) }
+  catch(e){ return 4 }
 }
 function folOnset(on){
   const perf=performance.now()-(fol.ctx.currentTime-on)*1000;
   const ts=performance.timeOrigin+perf+(clock.off||0)-(+$("folDelay").value||0);   // istante del colpo, ora del server
-  folFlash();
-  if(fol.arm){ armOnset(ts); return }
-  if(!fol.on||!live||live.status!=="playing"||clock.off==null||ts<live.anchorServer) return;
-  const tl=timelineFor(clampBar(live.from),live.countIn);
-  const P=live.anchorPos+(ts-live.anchorServer)/1000*rateNow();
-  const nb=folNearest(tl,P);
-  if(!nb||Math.abs(nb.err)>nb.tol){ fol.rejected++; folStatus(); return }
-  fol.accepted++;
-  const h=fol.hist; h.push({ts,b:nb.sec,key:tlKey});
-  while(h.length&&(h[0].key!==tlKey||ts-h[0].ts>10000)) h.shift();
-  while(h.length>8) h.shift();
-  folTryApply(); folStatus();
-}
-function folTryApply(){
-  if(!fol.on||sending||rateBusy||Date.now()-fol.lastApply<1200||fol.hist.length<4||!live||live.status!=="playing") return;
-  const now=serverNow(), f=folFit(fol.hist,now); if(!f) return;
-  const r=Math.min(1.5,Math.max(.5,f.r)), cur=live.anchorPos+(now-live.anchorServer)/1000*rateNow();
-  fol.rms=f.rms;
-  if(Math.abs(r-rateNow())<.003&&Math.abs(f.pos-cur)<.008) return;
-  fol.lastApply=Date.now(); fol.myAnchor=Math.round(now);
-  if(lgActive()&&Math.abs(r-1)>.01) lgMsg("Logic non cambia velocità: finché il click esterno non è a velocità 100% resta fuori sincrono.",true);
-  send({...live,anchorPos:f.pos,anchorServer:fol.myAnchor,rate:r},"Segue il click esterno ("+Math.round(r*100)+"%)","rate");
-}
-// un comando nuovo (Via, Pausa, salto…) azzera i colpi raccolti; le correzioni fatte da qui no
-function folNewState(st){ if(fol.arm&&st.status==="playing") armOff("Un altro comando ha avviato la pagina: attesa annullata."); if(st.status!=="playing"||st.anchorServer!==fol.myAnchor) fol.hist.length=0 }
-
-// ---------- Attesa del click esterno e partenza automatica ----------
-// La pagina resta ferma e ascolta la battuta di preparazione del click esterno (tanti colpi quanti i battiti della battuta, 4 in 4/4).
-// Dal passo dei colpi ricava velocità e istante del primo battito e parte da sola, agganciata (l'istante di partenza è un'ora del server:
-// anche se il comando arriva con ritardo, tutti i dispositivi calcolano la stessa posizione).
-function armOff(msg){ if(!fol.arm) return; fol.arm=null; regiaButtons(); if(msg) folMsg(msg) }
-function armNeed(){
-  try{ const tl=timelineFor(clampBar(parseInt($("from").value,10)||firstN),ciVal()); return Math.max(2,prepInfo(tl,0).offs.length) }
-  catch(e){ return 4 }
+  folFlash(); if(fol.arm) armOnset(ts);
 }
 function armOnset(ts){
   const a=fol.arm; if(!a) return;
@@ -826,35 +741,23 @@ function armOnset(ts){
     if(bad){ T.length=0; if(n>1) folMsg("Colpo irregolare: ricomincio a contare.") }
   }
   T.push(ts);
-  const need=a.need;
-  if(T.length<need){ folMsg("In attesa del click esterno: colpo "+T.length+" di "+need+"…"); return }
+  if(T.length<a.need){ folMsg("In attesa del click esterno: colpo "+T.length+" di "+a.need+"…"); return }
   // retta ts = a0 + g·i sui colpi della preparazione; il primo battito della musica è l'indice «need»
-  const m=T.length; let mi=(m-1)/2, mt=0; for(const t of T) mt+=t; mt/=m;
+  const m=T.length, mi=(m-1)/2; let mt=0; for(const t of T) mt+=t; mt/=m;
   let sxx=0,sxy=0; T.forEach((t,i)=>{ sxx+=(i-mi)*(i-mi); sxy+=(i-mi)*(t-mt) });
-  const g=sxy/sxx, a0=mt-g*mi, tStart=a0+g*need;
-  fol.arm=null;
-  const tl=timelineFor(clampBar(a.from),a.countIn), bs=prepInfo(tl,0), beats=bs.offs.length;
-  const r=bs.barSec/(beats*g/1000);
+  const g=sxy/sxx, tStart=mt-g*mi+g*a.need;
+  const tl=timelineFor(a.from,a.countIn), bs=prepInfo(tl,0), r=bs.barSec/(bs.offs.length*g/1000);
   if(!(r>=.5&&r<=1.5)){
-    regiaButtons(); folMsg("Il click esterno ("+Math.round(60000/g)+" colpi/min) è troppo diverso dal tempo del brano (velocità "+Math.round(r*100)+"%, ammessa 50–150%): non parto. Riprova o controlla la battuta di partenza.",true); return }
-  const st={status:"playing",from:clampBar(a.from),countIn:a.countIn,anchorPos:0,anchorServer:Math.round(tStart)};
-  if(Math.abs(r-1)>.002) st.rate=r;
-  fol.hist.length=0; fol.myAnchor=st.anchorServer; fol.lastApply=Date.now(); fol.accepted=fol.rejected=0;
-  regiaButtons(); folMsg("Click esterno agganciato ("+Math.round(60000/g)+" colpi/min, velocità "+Math.round(r*100)+"%): parto.");
-  send(st,"Partenza sul click esterno",st.rate?"rate":undefined);
+    T.length=0; folMsg("Il click esterno ("+Math.round(60000/g)+" colpi/min) è troppo diverso dal tempo del brano: non parto. Controlla battuta di partenza e soglia, poi riprova.",true); return }
+  fol.arm=null; if(fol.autoOn) micOff();
+  const st={status:"playing",from:a.from,countIn:a.countIn,anchorPos:0,anchorServer:Math.round(tStart)};
+  lgPlayAt(st.anchorServer);                                      // Logic parte sullo stesso istante della pagina
+  let t="Click esterno agganciato ("+Math.round(60000/g)+" colpi/min): parto"+(lgActive()?" con Logic.":". Logic non è collegato: parte solo la pagina.");
+  if(Math.abs(r-1)>.05){ t+=" Attenzione: il click esterno è al "+Math.round(r*100)+"% del tempo del brano, pagina e Logic restano al 100%."; }
+  folMsg(t,Math.abs(r-1)>.05||!lgActive());
+  send(st,"Partenza sul click esterno").then(ok=>{ if(!ok) lgStopNow() });
 }
-$("folArm").onclick=async()=>{
-  if(fol.arm){ armOff("Attesa annullata."); return }
-  if(sending||(live&&live.status==="playing")) return;
-  if(!fol.on){
-    fol.accepted=fol.rejected=0; fol.rms=null; fol.on=true; $("folOn").checked=true;
-    if(!(await folStart())){ fol.on=false; $("folOn").checked=false; return }
-  }
-  fol.arm={ts:[],need:armNeed(),from:clampBar(parseInt($("from").value,10)||firstN),countIn:ciVal()};
-  regiaButtons();
-  folMsg("In attesa del click esterno: "+fol.arm.need+" colpi regolari e la pagina parte da sola"+(audioOn?". Attenzione: il click di questa pagina è acceso, il microfono può sentirlo.":"."), audioOn);
-};
-async function folStart(){
+async function micOn(){
   if(!window.isSecureContext||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
     folMsg("Il microfono non è disponibile in questa pagina: serve un indirizzo https e Chrome o Edge, aperta direttamente (non dentro Google Sites).",true); return false }
   try{ fol.stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}}) }
@@ -868,27 +771,31 @@ async function folStart(){
     fol.src.connect(fol.node); fol.node.connect(fol.mute); fol.mute.connect(fol.ctx.destination);
     fol.node.port.onmessage=e=>{ const m=e.data; if(m.lv!==undefined){ fol.lv=m.lv; fol.bg=m.bg; folMeter() } if(m.on!==undefined) folOnset(m.on) };
     fol.node.port.postMessage({sens:fol.sens});
-    return true;
-  }catch(e){ folStop(); folMsg("Ascolto non avviato: "+e.message,true); return false }
+    fol.on=true; $("folOn").checked=true; return true;
+  }catch(e){ micOff(); folMsg("Ascolto non avviato: "+e.message,true); return false }
 }
-function folStop(){
+function micOff(){
   try{ fol.stream&&fol.stream.getTracks().forEach(t=>t.stop()) }catch(e){}
   try{ if(fol.node){ fol.node.port.onmessage=null; fol.node.disconnect() } }catch(e){}
   try{ fol.src&&fol.src.disconnect() }catch(e){}
   try{ fol.mute&&fol.mute.disconnect() }catch(e){}
-  fol.stream=fol.node=fol.src=fol.mute=null; fol.hist.length=0; fol.lv=0; folMeter();
+  fol.stream=fol.node=fol.src=fol.mute=null; fol.on=false; fol.autoOn=false; fol.lv=0; $("folOn").checked=false; folMeter();
 }
 $("folOn").addEventListener("change",async()=>{
-  if($("folOn").checked){
-    fol.accepted=fol.rejected=0; fol.rms=null; fol.on=true;
-    if(!(await folStart())){ fol.on=false; $("folOn").checked=false; return }
-    if(audioOn) folMsg("In ascolto. Attenzione: il click di questa pagina è acceso e il microfono può sentirlo: spegnilo o usa le cuffie.",true);
-    else folMsg("In ascolto. Premi Via quando il click esterno sta per partire sul primo battito: dopo i primi 4 impulsi la pagina si aggancia da sola.");
-  } else { armOff(); fol.on=false; folStop(); folMsg("Spento. Ascolta con il microfono un click esterno e regola la velocità perché lo segua.") }
+  if($("folOn").checked){ fol.autoOn=false; if(!(await micOn())) $("folOn").checked=false }
+  else { armOff(); micOff() }
 });
+$("folArm").onclick=async()=>{
+  if(fol.arm){ armOff("Attesa annullata."); return }
+  if(sending||(live&&live.status==="playing")) return;
+  if(!fol.on){ if(!(await micOn())) return; fol.autoOn=true }
+  fol.arm={ts:[],need:armNeed(),from:clampBar(parseInt($("from").value,10)||firstN),countIn:ciVal()};
+  regiaButtons();
+  folMsg("In attesa del click esterno: "+fol.arm.need+" colpi regolari e la pagina parte da sola"+(audioOn?". Attenzione: il click di questa pagina è acceso, il microfono può sentirlo: spegnilo o usa le cuffie.":"."),audioOn);
+};
 $("folSens").addEventListener("input",()=>{ fol.sens=+$("folSens").value; lgSave("fsens",$("folSens").value); if(fol.node) fol.node.port.postMessage({sens:fol.sens}); folMeter() });
 $("folDelay").addEventListener("change",()=>{ lgSave("fdelay",$("folDelay").value); $("folDelay").blur() });
-{ const s=lgLoad("fsens"), d=lgLoad("fdelay"); if(s!==null){ $("folSens").value=s; fol.sens=+s } if(d!==null) $("folDelay").value=d }
+{ const sv=lgLoad("fsens"), d=lgLoad("fdelay"); if(sv!==null){ $("folSens").value=sv; fol.sens=+sv } if(d!==null) $("folDelay").value=d }
 const startAt=(from,countIn,pos,rate)=>Math.round(serverNow()+leadMs(from,countIn,pos,rate));
 const ciVal=()=>+$("countIn").value;
 function currentPos(){ const p=phase(); return p.idle?0:Math.max(0,p.t) }
@@ -922,9 +829,6 @@ function seekLabel(n){ $("seekLbl").textContent=`Battuta ${n} di ${lastN}`; high
 function regiaButtons(){
   const st=live?live.status:"stopped";
   stageEl.classList.toggle("run",st==="playing");
-  const rs=$("rate"), canRate=!!live&&((st==="playing"&&serverNow()>=live.anchorServer)||st==="paused")&&!fol.on;
-  if(rs.disabled===canRate){ rs.disabled=!canRate; $("rateReset").disabled=!canRate }
-  if(document.activeElement!==rs&&!rateBusy&&rateWant===null){ const rv=rateNow(); if(+rs.value!==rv) rs.value=rv; rateLabel(rv) }
   const on=cdOn(), cb=$("cdBtn"), ct="⏱ Conto 3-2-1 per tutti: "+(on?"sì":"no");
   if(cb.textContent!==ct){ cb.textContent=ct; cb.setAttribute("aria-pressed",String(on)) }
   cb.disabled=sending;
