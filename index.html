@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battute in diretta</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: schermo grande in alto, riga di stato sotto, pannello di regia nascosto finché non si entra */
+:root{
+  --bg:#ffffff; --panel:#f5f4f1; --fg:#1d1c1a; --muted:#6c6a64; --line:#dcd9d2;
+  --accent:#c9861b; --accent-fg:#ffffff; --ok:#2f7d4f; --err:#b23a2e;
+  --body:"Inter",system-ui,-apple-system,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--body)}
+.wrap{max-width:960px;margin:0 auto;padding:12px max(12px,env(safe-area-inset-left,0px)) 16px max(12px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:12px}
+#stage{position:relative;background:#121211;border-radius:10px;overflow:hidden}
+/* Comandi della regia sul riquadro: visibili solo a chi è nella regia, si nascondono mentre suona */
+.ctl{position:absolute;left:50%;bottom:3.5%;transform:translateX(-50%);display:flex;gap:8px;padding:6px;border-radius:12px;background:rgba(18,18,17,.74);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);transition:opacity .25s}
+.ctl button{flex:none;padding:8px 14px;font-size:14px;color:#ecebe7;background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2)}
+.ctl button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+.ctl button:disabled{opacity:.35}
+#stage.run:not(.show):not(:focus-within) .ctl{opacity:0;pointer-events:none}
+@media(max-width:480px){.ctl{gap:6px;padding:5px}.ctl button{padding:7px 10px;font-size:13px}}
+#stage:fullscreen{display:flex;align-items:center;justify-content:center;border-radius:0}
+canvas{width:100%;height:auto;aspect-ratio:16/9;max-width:100%;display:block}
+#stage:fullscreen canvas{width:auto;height:100%;max-height:100vh;max-width:100vw;object-fit:contain}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.conn{display:inline-flex;align-items:center;gap:8px;font:13px var(--mono);color:var(--muted);flex:1 1 220px;min-width:0}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+.conn.ok .dot{background:var(--ok)} .conn.err .dot{background:var(--err)} .conn.err{color:var(--err)}
+button{font:600 14px var(--body);border-radius:7px;padding:9px 14px;border:1px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer;white-space:nowrap}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+button[aria-pressed="true"]{background:var(--fg);border-color:var(--fg);color:var(--bg)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.vol{display:inline-flex;align-items:center;gap:8px;font-size:13px}
+.vol input{width:110px;accent-color:var(--accent)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:12px}
+.panel h2{margin:0;font:700 1.25rem "Barlow Condensed","Arial Narrow",sans-serif;letter-spacing:.04em;text-transform:uppercase}
+label.f{display:flex;flex-direction:column;gap:4px;font-weight:500;font-size:13px;flex:1 1 140px;min-width:0}
+input[type=number],input[type=password],select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;width:100%}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btns button{flex:1 1 auto}
+.seek{display:flex;align-items:center;gap:12px}
+.seek input{flex:1;min-width:0;accent-color:var(--accent)}
+.seek output{font:13px var(--mono);font-variant-numeric:tabular-nums;color:var(--muted);min-width:12ch;text-align:right}
+.bookmarks{display:flex;flex-wrap:wrap;gap:6px}
+.bm{display:inline-flex;align-items:baseline;gap:6px;max-width:100%;font:500 13px var(--body);padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:var(--bg)}
+.bm b{font:600 12px var(--mono);color:var(--muted)}
+.bm span{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.bm.on{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)} .bm.on b{color:var(--accent-fg)}
+.msg{font-size:13px;margin:0;color:var(--muted)} .msg.err{color:var(--err)}
+.foot{display:flex;justify-content:flex-end}
+.link{background:none;border:0;padding:4px 0;color:var(--muted);font-weight:500;text-decoration:underline;text-underline-offset:3px}
+.login{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+.logic{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:8px}
+.logic h3{margin:0;font:600 12px var(--body);color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+label.chk{display:flex;flex-direction:row;align-items:center;gap:8px;flex:0 0 auto;font-weight:500;font-size:13px;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="stage"><canvas id="cv" width="1280" height="720" aria-label="Battuta in diretta"></canvas>
+    <div class="ctl" id="ctl" hidden>
+      <button class="primary" id="goBtn">▶ Via</button>
+      <button id="pauseBtn">❚❚ Pausa</button>
+      <button id="stopBtn">■ Stop</button>
+    </div>
+  </div>
+  <div class="row">
+    <span class="conn" id="conn" role="status"><span class="dot"></span><span id="connTxt">Collegamento…</span></span>
+    <button id="clickBtn" aria-pressed="false">🔈 Click</button>
+    <span class="vol"><label for="vol">Volume</label><input type="range" id="vol" min="0" max="1" step="0.05" value="0.8"></span>
+    <button id="fsBtn">⛶ Schermo intero</button>
+  </div>
+
+  <section class="panel" id="regia" hidden>
+    <h2>Regia</h2>
+    <div class="row">
+      <label class="f">Parti dalla battuta
+        <input type="number" id="from" value="1">
+      </label>
+      <label class="f">Battute di preparazione
+        <select id="countIn">
+          <option value="0">Nessuna</option>
+          <option value="1" selected>1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+        </select>
+      </label>
+    </div>
+    <div class="btns">
+      <button id="cdBtn" aria-pressed="true" title="Mostra o nasconde la scritta «Si parte tra 3, 2, 1» sugli schermi di tutti">⏱ Conto 3-2-1 per tutti: sì</button>
+    </div>
+    <div class="logic">
+      <h3>Logic Pro (MIDI)</h3>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="lgOn"> Collega Logic</label>
+        <label class="f">Porta di uscita
+          <select id="lgPort"><option value="">-</option></select>
+        </label>
+        <label class="f">Ritardo Logic (ms)
+          <input type="number" id="lgDelay" value="0" step="5">
+        </label>
+        <button id="lgTest" title="Manda un Play a Logic e, dopo 2 secondi, uno Stop">Prova Logic</button>
+      </div>
+      <p class="msg" id="lgMsg">Spento. Barra spaziatrice = Via / Pausa. Con Logic collegato, parte e si ferma anche Logic.</p>
+    </div>
+    <div class="seek">
+      <input type="range" id="seek" min="1" max="1" step="1" value="1" aria-label="Posizione">
+      <output id="seekLbl" for="seek">Battuta 1</output>
+    </div>
+    <div class="bookmarks" id="bookmarks"></div>
+    <p class="msg" id="regiaMsg">Ogni comando parte con una battuta di preparazione: arriva a tutti i dispositivi e poi si parte insieme ovunque.</p>
+    <div class="foot"><button class="link" id="logoutBtn">Esci dalla regia</button></div>
+  </section>
+
+  <section class="panel" id="loginBox" hidden>
+    <div class="login">
+      <label class="f">Password di regia
+        <input type="password" id="pw" autocomplete="current-password">
+      </label>
+      <button class="primary" id="loginBtn">Entra</button>
+      <button id="loginCancel">Annulla</button>
+    </div>
+  </section>
+  <div class="foot"><button class="link" id="regiaLink">Regia</button></div>
+</div>
+
+<script>
+"use strict";
+// =====================================================================
+// CONFIGURAZIONE (modificabile da chi pubblica la pagina)
+// =====================================================================
+const CONFIG={
+  appsScriptUrl:"https://script.google.com/macros/s/AKfycbz83jF6uLM4lA0akyF-hTkGRMpj_RkE7Xi_dvbEhNvFQ9SpKQ73y7M4w5zLNCP_N-e_TA/exec",         // OBBLIGATORIO: URL /exec dello script contabattute-drive.gs
+  driveFile:"https://drive.google.com/file/d/1eQA5z0Oh7jFTW58wgUIK4AIlH6UDXdGS/view?usp=sharing",             // nome (o link) del MIDI nella cartella dello script
+  driveProject:"palapartenope.json",          // nome (o link) del progetto .contabattute.json (facoltativo)
+  title:"Live Click Palapartenope",          // testo in alto a sinistra (il progetto lo sostituisce)
+  firstBar:1,               // numero della prima battuta (0 se c'è un'anacrusi)
+  cutDouble:true,           // 2/2, 3/2… battuti a semiminime (2/2 in 4)
+  compoundDotted:true,      // 6/8, 9/8, 12/8 battuti a semiminima puntata
+  marks:[],                 // indicazioni, es. {bar:104, text:"Secondo brano"}
+  minLeadSeconds:3,         // l'anticipo del comando è UNA battuta di preparazione (stesso metro e tempo della battuta di partenza);
+                            // se dura meno di questi secondi viene ripetuta, per dare ai dispositivi il tempo di riceverla. 0 = sempre una sola battuta
+  showCountdown:true,       // valore iniziale della scritta "Si parte tra 3, 2, 1"; la regia lo cambia per tutti con il pulsante "Conto 3-2-1"
+  pollSeconds:1.5,          // ogni quanto i dispositivi controllano la regia
+  // alternative per il MIDI, come nelle altre versioni
+  driveApiKey:"", midiUrl:"", midiBase64:"", projectUrl:""
+};
+// =====================================================================
+// ---------- MIDI parsing ----------
+function parseMidi(buf){
+  const d=new DataView(buf); let p=0;
+  const str=n=>{let s="";for(let i=0;i<n;i++)s+=String.fromCharCode(d.getUint8(p++));return s};
+  const u32=()=>{const v=d.getUint32(p);p+=4;return v}, u16=()=>{const v=d.getUint16(p);p+=2;return v};
+  const vlq=()=>{let v=0,b;do{b=d.getUint8(p++);v=(v<<7)|(b&127)}while(b&128);return v};
+  if(str(4)!=="MThd") throw new Error("Non è un file MIDI valido.");
+  const hl=u32(); u16(); const ntr=u16(); const div=u16(); p=8+hl;
+  if(div&0x8000) throw new Error("File MIDI con tempo SMPTE: non supportato.");
+  const tempos=[],sigs=[],notes=[]; let endTick=0;
+  for(let t=0;t<ntr&&p<d.byteLength;t++){
+    const id=str(4), len=u32(), end=p+len;
+    if(id!=="MTrk"){p=end;t--;continue}
+    let tick=0,rs=0; const open={};
+    while(p<end){
+      tick+=vlq(); if(tick>endTick) endTick=tick; let st=d.getUint8(p);
+      if(st&0x80){p++; if(st<0xF0) rs=st} else st=rs;
+      if(st===0xFF){
+        const type=d.getUint8(p++), l=vlq(), s=p;
+        if(type===0x51&&l===3) tempos.push({tick,us:(d.getUint8(s)<<16)|(d.getUint8(s+1)<<8)|d.getUint8(s+2)});
+        if(type===0x58&&l>=2) sigs.push({tick,num:d.getUint8(s),den:2**d.getUint8(s+1)});
+        if(type===0x2F){p=s+l;break}
+        p=s+l;
+      } else if(st===0xF0||st===0xF7){ p+=vlq(); }
+      else{
+        const hi=st&0xF0, ch=st&15, a=d.getUint8(p++), b=(hi===0xC0||hi===0xD0)?0:d.getUint8(p++);
+        const key=ch*128+a;
+        if(hi===0x90&&b>0){ (open[key]||(open[key]=[])).push({tick,vel:b}); }
+        else if(hi===0x80||(hi===0x90&&b===0)){
+          const o=open[key]&&open[key].shift();
+          if(o&&ch!==9) notes.push({tick:o.tick,end:tick,note:a,vel:o.vel});
+        }
+      }
+    }
+    p=end;
+  }
+  return {ppq:div,tempos,sigs,notes,endTick};
+}
+
+// ---------- Timeline (battute, battiti, secondi) ----------
+function buildTimeline(m,opt){
+  const tempos=[...m.tempos].sort((a,b)=>a.tick-b.tick);
+  if(!tempos.length||tempos[0].tick>0) tempos.unshift({tick:0,us:500000});
+  const segs=[]; let sec=0;
+  tempos.forEach((t,i)=>{ if(i>0){const pv=segs[segs.length-1]; sec+=(t.tick-pv.tick)*pv.us/1e6/m.ppq}
+    if(segs.length&&segs[segs.length-1].tick===t.tick) segs[segs.length-1].us=t.us; else segs.push({tick:t.tick,sec,us:t.us}); });
+  const segAt=tick=>{let lo=0,hi=segs.length-1;while(lo<hi){const mid=(lo+hi+1)>>1;if(segs[mid].tick<=tick)lo=mid;else hi=mid-1}return segs[lo]};
+  const t2s=tick=>{const s=segAt(tick);return s.sec+(tick-s.tick)*s.us/1e6/m.ppq};
+  const sigs=[...m.sigs].sort((a,b)=>a.tick-b.tick);
+  if(!sigs.length||sigs[0].tick>0) sigs.unshift({tick:0,num:4,den:4});
+  const grouping=(sg,unit)=>{
+    const compound=opt.compound&&sg.den>=8&&sg.num%3===0&&sg.num>3;
+    const cut=!compound&&sg.den===2&&opt.cut===2;
+    return {step:compound?unit*3:cut?unit/2:unit, count:compound?sg.num/3:cut?sg.num*2:sg.num};
+  };
+  const bars=[],beats=[]; let tick=0,n=opt.firstBar,si=0;
+  const last=Math.max(m.endTick,1);
+  while(tick<last){
+    while(si+1<sigs.length&&sigs[si+1].tick<=tick) si++;
+    const sg=sigs[si], unit=m.ppq*4/sg.den;
+    const nextSig=si+1<sigs.length?sigs[si+1].tick:Infinity;
+    let barEnd=Math.min(tick+sg.num*unit,nextSig);
+    const {step,count}=grouping(sg,unit);
+    const bar={n,tick,sec:t2s(tick),num:sg.num,den:sg.den,bpm:6e7/segAt(tick).us,count,beatIdx:beats.length};
+    bars.push(bar);
+    let b=0; for(let bt=tick;bt<barEnd-1e-6;bt+=step,b++) beats.push({tick:bt,sec:t2s(bt),bar:bars.length-1,beat:b});
+    bar.count=Math.max(count,b);
+    tick=barEnd; n++;
+  }
+  const fullEnd=t2s(tick);
+  const allBars=bars.map(b=>({...b}));
+  // Intervallo di battute da includere (vuoto = tutto il brano)
+  let i0=0,i1=bars.length-1;
+  if(Number.isFinite(opt.from)){const k=bars.findIndex(b=>b.n>=opt.from);i0=k<0?bars.length-1:k}
+  if(Number.isFinite(opt.to)){let k=-1;bars.forEach((b,idx)=>{if(b.n<=opt.to)k=idx});i1=Math.max(i0,k)}
+  const s0=bars[i0].sec, s1=i1+1<bars.length?bars[i1+1].sec:fullEnd;
+  const rBars=bars.slice(i0,i1+1), rBeats=beats.filter(b=>b.bar>=i0&&b.bar<=i1);
+  // Battute di attacco: stesso metro e stesso tempo della prima battuta dell'intervallo
+  const N=Math.max(0,Math.floor(opt.countIn||0));
+  const fb=rBars[0], us0=segAt(fb.tick).us, g0=grouping({num:fb.num,den:fb.den},m.ppq*4/fb.den);
+  const stepSec=g0.step*us0/1e6/m.ppq, off=N*g0.count*stepSec;
+  rBars.forEach(b=>{b.sec=b.sec-s0+off;b.beatIdx=0}); rBeats.forEach(b=>{b.sec=b.sec-s0+off;b.bar=b.bar-i0+N});
+  const pre=[],preBeats=[];
+  for(let k=0;k<N;k++){
+    pre.push({n:N-k,countIn:true,sec:k*g0.count*stepSec,num:fb.num,den:fb.den,bpm:6e7/us0,count:g0.count});
+    for(let b=0;b<g0.count;b++) preBeats.push({sec:(k*g0.count+b)*stepSec,bar:k,beat:b});
+  }
+  const endSec=s1-s0+off;
+  const notes=m.notes.map(x=>({t:t2s(x.tick),e:t2s(x.end),note:x.note,vel:x.vel}))
+    .filter(x=>x.t>=s0-1e-6&&x.t<s1-1e-6)
+    .map(x=>({t:x.t-s0+off,d:Math.max(.05,Math.min(x.e,s1)-x.t),note:x.note,vel:x.vel})).sort((a,b)=>a.t-b.t);
+  return {bars:pre.concat(rBars),beats:preBeats.concat(rBeats),allBars,endSec,off,s0,notes,segs,ppq:m.ppq,
+    ranged:i0>0||i1<bars.length-1,fromN:rBars[0].n,toN:rBars[rBars.length-1].n,
+    bpmAt:s=>{s=Math.max(0,s-off)+s0+1e-9;let lo=0,hi=segs.length-1;while(lo<hi){const mid=(lo+hi+1)>>1;if(segs[mid].sec<=s)lo=mid;else hi=mid-1}return 6e7/segs[lo].us}};
+}
+
+// ---------- Esempio predefinito ----------
+function demoMidi(){
+  const ppq=480;
+  return {ppq,endTick:8*4*ppq+4*3*ppq,notes:[],
+    tempos:[{tick:0,us:500000},{tick:8*4*ppq,us:625000}],
+    sigs:[{tick:0,num:4,den:4},{tick:8*4*ppq,num:3,den:4}]};
+}
+
+
+const $=id=>document.getElementById(id);
+const cv=$("cv"), g=cv.getContext("2d");
+const fmt=s=>{s=Math.max(0,s);const m=Math.floor(s/60);return m+":"+(s%60).toFixed(2).padStart(5,"0")};
+function b64(s){const b=atob(s.replace(/\s+/g,"")),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer}
+function driveId(s){const m=String(s).match(/\/d\/([\w-]{20,})|[?&]id=([\w-]{20,})/);return m?(m[1]||m[2]):String(s).trim()}
+// Collegamento a Drive tramite Apps Script (consigliato: niente chiave API, file non condivisi)
+const looksLikeId=s=>/\/d\/|[?&]id=|\/folders\//.test(s)||/^[\w-]{25,}$/.test(String(s).trim());
+async function fetchViaScript(src){
+  const q=looksLikeId(src)?"id="+encodeURIComponent(driveId(src)):"name="+encodeURIComponent(String(src).trim());
+  let r;
+  try{ r=await fetch(CONFIG.appsScriptUrl+(CONFIG.appsScriptUrl.includes("?")?"&":"?")+q) }
+  catch(e){ throw new Error("lo script di Drive non risponde: controlla l'URL /exec e che l'accesso sia “Chiunque”") }
+  let j; try{ j=await r.json() }catch(e){ throw new Error("risposta non valida dallo script di Drive (accesso non impostato su “Chiunque”?)") }
+  if(!j.ok) throw new Error(j.error||"errore dello script di Drive");
+  const b=atob(j.data),u=new Uint8Array(b.length); for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);
+  return {buf:u.buffer,name:j.name};
+}
+const ERR_BLOCKED="il browser ha bloccato la richiesta a Google Drive. Succede quando il file non è condiviso con “Chiunque abbia il link” o la chiave API ha restrizioni sui siti; la soluzione più affidabile è il collegamento tramite Apps Script (appsScriptUrl)";
+const ERR_ACCESS="file non accessibile: controlla che sia condiviso con “Chiunque abbia il link” e che la chiave API sia valida";
+async function fetchBuf(src,isDrive){
+  let url=src;
+  if(isDrive&&CONFIG.appsScriptUrl) return (await fetchViaScript(src)).buf;
+  if(isDrive){
+    if(!CONFIG.driveApiKey) throw new Error("manca il collegamento a Drive: compila appsScriptUrl (o driveApiKey)");
+    url=`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(driveId(src))}?alt=media&key=${encodeURIComponent(CONFIG.driveApiKey)}`;
+  }
+  let r;
+  try{ r=await fetch(url) }catch(e){ throw new Error(isDrive?ERR_BLOCKED:"rete non raggiungibile o accesso bloccato") }
+  if(!r.ok) throw new Error(r.status===403||r.status===404?ERR_ACCESS:"errore "+r.status+" nel download");
+  return r.arrayBuffer();
+}
+async function fetchProject(){
+  const src=CONFIG.driveProject||CONFIG.projectUrl;
+  if(!src) return null;
+  const p=JSON.parse(new TextDecoder().decode(await fetchBuf(src,!!CONFIG.driveProject)));
+  if(p.app!=="contabattute-midi") throw new Error("il file di progetto non è di Contabattute");
+  const st=p.settings||{};
+  if(st.title!=null) CONFIG.title=st.title;
+  if(st.firstBar!=null&&st.firstBar!=="") CONFIG.firstBar=+st.firstBar;
+  // il 2/2 resta sempre in 4 nella versione base, anche se il progetto dice altro
+  if(st.compound!=null) CONFIG.compoundDotted=!!st.compound;
+  if(st.playNotes!=null) CONFIG.playNotes=!!st.playNotes;
+  if(st.countIn!=null&&st.countIn!=="") $("countIn").value=String(st.countIn);
+  if(st.vol!=null&&st.vol!=="") $("vol").value=st.vol;
+  if(Array.isArray(p.marks)) CONFIG.marks=p.marks;
+  return p;
+}
+async function fetchMidi(proj){
+  if(CONFIG.driveFile) return parseMidi(await fetchBuf(CONFIG.driveFile,true));
+  if(CONFIG.midiUrl) return parseMidi(await fetchBuf(CONFIG.midiUrl,false));
+  if(CONFIG.midiBase64) return parseMidi(b64(CONFIG.midiBase64));
+  if(proj&&proj.midi) return parseMidi(b64(proj.midi));
+  return demoMidi();
+}
+function message(lines){
+  const W=cv.width,H=cv.height,u=Math.min(W,H)/100;
+  g.fillStyle="#121211";g.fillRect(0,0,W,H);g.textAlign="center";
+  lines.forEach((l,i)=>{g.fillStyle=i?"#8d8a82":"#ecebe7";g.font=`${i?400:600} ${i?3.6*u:5.5*u}px Inter, sans-serif`;g.fillText(l,W/2,H/2+(i-lines.length/2+.5)*8*u,W*.9)});
+}
+function beatAt(t){const B=TL.beats;let lo=0,hi=B.length-1;if(t<B[0].sec)return -1;
+  while(lo<hi){const mid=(lo+hi+1)>>1;if(B[mid].sec<=t)lo=mid;else hi=mid-1}return lo}
+
+function draw(t,idle){
+  const W=cv.width,H=cv.height,u=Math.min(W,H)/100;
+  const bi=idle?-1:beatAt(t), beat=bi>=0?TL.beats[bi]:null, bar=idle?(TL.bars.find(b=>!b.countIn)||TL.bars[0]):TL.bars[beat?beat.bar:0];
+  const since=beat?t-beat.sec:1;
+  g.fillStyle="#121211";g.fillRect(0,0,W,H);
+  if(beat&&beat.beat===0&&since<.18){g.fillStyle=`rgba(226,162,60,${.16*(1-since/.18)})`;g.fillRect(0,0,W,H)}
+  g.textBaseline="alphabetic";
+  // titolo
+  g.fillStyle="#8d8a82"; g.font=`500 ${4.2*u}px Inter, sans-serif`; g.textAlign="left";
+  g.fillText(CONFIG.title,6*u,9*u);
+  // info a destra
+  g.textAlign="right"; g.fillStyle="#ecebe7"; g.font=`700 ${8*u}px "Barlow Condensed", sans-serif`;
+  g.fillText(bar.num+"/"+bar.den,W-6*u,12*u);
+  g.fillStyle="#b5b2aa"; g.font=`600 ${4.4*u}px "JetBrains Mono", monospace`;
+  g.fillText("♩ = "+(+TL.bpmAt(Math.max(t,0)).toFixed(1)),W-6*u,19*u);
+  g.fillText(t<TL.off?"−"+fmt(TL.off-t):fmt(t-TL.off+TL.s0),W-6*u,H-9*u);
+  // numero di battuta
+  g.textAlign="center"; g.fillStyle="#8d8a82"; g.font=`500 ${4.5*u}px Inter, sans-serif`;
+  g.fillText(bar.countIn?"ATTACCO":"BATTUTA",W/2,H*.27);
+  const mk=bar.countIn?null:markAt(bar.n);
+  if(mk){
+    const mb=TL.bars.find(b=>!b.countIn&&b.n===mk.bar), age=mb?t-mb.sec:99;
+    g.font=`600 ${6.5*u}px Inter, sans-serif`;
+    const tw=Math.min(g.measureText(mk.text).width,W*.5), py=H*.155;
+    if(age>=0&&age<2.5){g.fillStyle=`rgba(226,162,60,${.22*(1-age/2.5)})`;
+      g.beginPath();g.roundRect?g.roundRect(W/2-tw/2-3*u,py-6*u,tw+6*u,8.8*u,1.5*u):g.rect(W/2-tw/2-3*u,py-6*u,tw+6*u,8.8*u);g.fill()}
+    g.fillStyle="#e2a23c"; g.fillText(mk.text,W/2,py,W*.5);
+  }
+  g.fillStyle=bar.countIn?"#e2a23c":"#ffffff"; g.font=`700 ${40*u}px "Barlow Condensed", sans-serif`;
+  g.fillText(String(bar.n),W/2,H*.27+38*u);
+  // battiti
+  const n=bar.count, r=Math.min(4*u,(W*.7)/n/2.6), gap=r*2.8, y=H*.27+52*u, x0=W/2-(n-1)*gap/2;
+  for(let i=0;i<n;i++){
+    const on=beat&&i===beat.beat, done=beat&&i<beat.beat;
+    g.beginPath(); g.arc(x0+i*gap,y,on?r*1.15:r,0,Math.PI*2);
+    g.fillStyle=on?(i===0?"#e2a23c":"#ecebe7"):done?"#4a4842":"#2a2926"; g.fill();
+  }
+  // progresso
+  const pr=Math.min(1,Math.max(0,(t-TL.off)/(TL.endSec-TL.off)));
+  g.fillStyle="#2a2926";g.fillRect(6*u,H-5*u,W-12*u,.8*u);
+  g.fillStyle="#e2a23c";g.fillRect(6*u,H-5*u,(W-12*u)*pr,.8*u);
+}
+
+
+function click(ac,dest,time,accent,vol){
+  const o=ac.createOscillator(),gn=ac.createGain();
+  o.frequency.value=accent?1760:1100; o.type="sine";
+  gn.gain.setValueAtTime(0,time); gn.gain.linearRampToValueAtTime(vol*(accent?1:.7),time+.002);
+  gn.gain.exponentialRampToValueAtTime(.0001,time+.06);
+  o.connect(gn).connect(dest); o.start(time); o.stop(time+.07);
+}
+
+// ---------- Stato del brano ----------
+let midi=null, firstN=1, lastN=1, marks=[], TL=null, tlKey="";
+function markAt(n){let r=null;for(const m of marks){if(m.bar<=n)r=m;else break}return r}
+function timelineFor(from,countIn){
+  const key=from+"|"+countIn;
+  if(key!==tlKey){
+    TL=buildTimeline(midi,{firstBar:CONFIG.firstBar,compound:CONFIG.compoundDotted,cut:CONFIG.cutDouble?2:1,countIn,from,to:NaN});
+    tlKey=key;
+  }
+  return TL;
+}
+const clampBar=n=>Math.min(lastN,Math.max(firstN,Number.isFinite(n)?n:firstN));
+
+// ---------- Orologio comune (ora del server di Google) ----------
+// Ogni risposta dello script porta l'ora del server; si tiene il campione con il
+// tempo di andata e ritorno più breve, che è il più preciso.
+const nowLocal=()=>performance.timeOrigin+performance.now();
+const clock={off:null,rtt:Infinity,samples:[]};
+const serverNow=()=>nowLocal()+(clock.off||0);
+async function api(params){
+  const base=CONFIG.appsScriptUrl;
+  const url=base+(base.includes("?")?"&":"?")+new URLSearchParams(params);
+  const t0=nowLocal();
+  let r; try{ r=await fetch(url,{cache:"no-store"}) }catch(e){ throw new Error("rete non raggiungibile") }
+  let j; try{ j=await r.json() }catch(e){ throw new Error("risposta non valida dallo script (accesso impostato su “Chiunque”?)") }
+  const t1=nowLocal();
+  if(typeof j.now==="number"){
+    clock.samples.push({rtt:t1-t0,off:j.now-(t0+t1)/2});
+    if(clock.samples.length>12) clock.samples.shift();
+    const best=clock.samples.reduce((a,b)=>b.rtt<a.rtt?b:a);
+    clock.off=best.off; clock.rtt=best.rtt;
+  }
+  return j;
+}
+
+// ---------- Stato della diretta ----------
+// {seq, status:"stopped"|"playing"|"paused", from, countIn, anchorPos, anchorServer}
+// In riproduzione: posizione = anchorPos + (oraServer - anchorServer); prima di anchorServer si aspetta.
+let live=null, lastOk=0, lastErr="";
+function applyState(st){
+  if(!st){ live=null; return }
+  if(live&&st.seq<live.seq) return;
+  if(!live||st.seq!==live.seq) onNewState(st);
+  live=st;
+}
+async function poll(){
+  try{
+    const j=await api({a:"state"});
+    if(j.ok){ applyState(j.state); lastOk=Date.now(); lastErr="" } else lastErr=j.error||"errore dello script";
+  }catch(e){ lastErr=e.message }
+  finally{ setTimeout(poll,document.hidden?5000:CONFIG.pollSeconds*1000) }
+}
+// ---------- Battuta di preparazione ----------
+// L'anticipo dei comandi è una battuta intera, con il metro e il tempo della battuta da cui si parte.
+// Il conto mostra i battiti che mancano: 4·3·2·1 in 4/4, 2·1 in 2/4, 2·1 in 6/8 battuto in due.
+function prepInfo(tl,pos){
+  let bi=0; for(let i=0;i<tl.bars.length;i++){ if(tl.bars[i].sec<=pos+1e-6) bi=i; else break }
+  const bar=tl.bars[bi], end=bi+1<tl.bars.length?tl.bars[bi+1].sec:tl.endSec;
+  const offs=tl.beats.filter(b=>b.bar===bi).map(b=>b.sec-bar.sec);
+  return {barSec:Math.max(.2,end-bar.sec),offs:offs.length?offs:[0]};
+}
+// durata (ms) tra il comando e la partenza: una o più battute di preparazione intere
+function leadMs(from,countIn,pos){
+  try{
+    const tl=buildTimeline(midi,{firstBar:CONFIG.firstBar,compound:CONFIG.compoundDotted,cut:CONFIG.cutDouble?2:1,countIn,from,to:NaN});
+    const {barSec}=prepInfo(tl,pos), minLead=Math.max(0,+CONFIG.minLeadSeconds||0);
+    return Math.round(barSec*Math.max(1,Math.ceil(minLead/barSec-1e-9))*1000);
+  }catch(e){ return 4000 }
+}
+// numero da mostrare quando mancano -dt secondi alla partenza ("" se si è prima dell'ultima battuta di preparazione)
+function prepNumber(tl,pos,dt){
+  const p=prepInfo(tl,pos), el=p.barSec+dt;
+  if(el<0) return "";
+  let k=0; for(let i=0;i<p.offs.length;i++){ if(p.offs[i]<=el+1e-9) k=i }
+  return String(p.offs.length-k);
+}
+// Conto 3-2-1: lo decide la regia e viaggia nello stato condiviso (campo cd); se manca vale CONFIG.showCountdown
+const cdOn=()=>live&&typeof live.cd==="boolean"?live.cd:CONFIG.showCountdown!==false;
+function phase(){
+  if(!live||live.status==="stopped"){
+    const tl=timelineFor(clampBar(live?live.from:firstN),live?live.countIn:0);
+    return {tl,idle:true,banner:clock.off==null?"Collegamento…":"In attesa del via"};
+  }
+  const tl=timelineFor(clampBar(live.from),live.countIn);
+  if(live.status==="paused") return {tl,t:live.anchorPos,idle:false,banner:"In pausa"};
+  const dt=(serverNow()-live.anchorServer)/1000;
+  if(dt<0){
+    const num=cdOn()?prepNumber(tl,live.anchorPos,dt):"";
+    return live.anchorPos>0?{tl,t:live.anchorPos,banner:num?"Si riparte tra "+num:""}:{tl,idle:true,banner:num?"Si parte tra "+num:""};
+  }
+  const t=live.anchorPos+dt;
+  if(t>tl.endSec+.3) return {tl,t:tl.endSec-1e-3,banner:"Fine"};
+  return {tl,t};
+}
+
+// ---------- Disegno ----------
+function banner(text){
+  const W=cv.width,H=cv.height,u=Math.min(W,H)/100;
+  g.font=`600 ${4.8*u}px Inter, sans-serif`;
+  const w=g.measureText(text).width+9*u, h=9*u, x=W/2-w/2, y=H*.27+52*u-h/2;
+  g.fillStyle="#e2a23c"; g.beginPath(); g.roundRect?g.roundRect(x,y,w,h,h/2):g.rect(x,y,w,h); g.fill();
+  g.fillStyle="#1a1306"; g.textAlign="center"; g.textBaseline="middle"; g.fillText(text,W/2,y+h/2+.3*u); g.textBaseline="alphabetic";
+}
+function frame(){
+  if(midi){
+    const p=phase();
+    if(p.idle) draw(p.tl.off,true); else draw(p.t);
+    if(p.banner) banner(p.banner);
+    followRegia(p);
+  }
+  updateConn();
+  requestAnimationFrame(frame);
+}
+function updateConn(){
+  const c=$("conn"), t=$("connTxt");
+  const fresh=Date.now()-lastOk<Math.max(6000,CONFIG.pollSeconds*4000);
+  let txt, cls;
+  if(!CONFIG.appsScriptUrl){ txt="Diretta non configurata: manca appsScriptUrl"; cls="err" }
+  else if(fresh&&clock.off!=null){ txt=live&&live.status==="playing"?"In diretta · sincronizzato":"Collegato · sincronizzato"; cls="ok" }
+  else if(lastErr){ txt="Senza collegamento ("+lastErr+"), riprovo…"; cls="err" }
+  else { txt="Collegamento…"; cls="" }
+  if(t.textContent!==txt) t.textContent=txt;
+  c.className="conn "+cls;
+}
+
+// ---------- Click su questo dispositivo ----------
+let actx=null, bus=null, schedSeq=null, nextBeat=0, audioOn=false;
+function onNewState(){ if(bus){try{bus.disconnect()}catch(e){}} bus=null; schedSeq=null }
+function scheduler(){
+  if(!audioOn||!midi||!live||live.status!=="playing"||clock.off==null) return;
+  const tl=timelineFor(clampBar(live.from),live.countIn);
+  if(schedSeq!==live.seq){
+    bus=actx.createGain(); bus.gain.value=+$("vol").value; bus.connect(actx.destination);
+    schedSeq=live.seq; nextBeat=0;
+    while(nextBeat<tl.beats.length&&tl.beats[nextBeat].sec<live.anchorPos-1e-6) nextBeat++;
+  }
+  const now=serverNow();
+  while(nextBeat<tl.beats.length){
+    const b=tl.beats[nextBeat], dt=(live.anchorServer+(b.sec-live.anchorPos)*1000-now)/1000;
+    if(dt>.3) break;
+    if(dt>-.03) click(actx,bus,actx.currentTime+Math.max(0,dt),b.beat===0,1);
+    nextBeat++;
+  }
+}
+setInterval(scheduler,25);
+$("clickBtn").onclick=()=>{
+  audioOn=!audioOn;
+  if(audioOn){ actx=actx||new (window.AudioContext||window.webkitAudioContext)(); actx.resume() }
+  else onNewState();
+  $("clickBtn").setAttribute("aria-pressed",audioOn);
+  $("clickBtn").textContent=audioOn?"🔊 Click attivo":"🔈 Click";
+  keepAwake();
+};
+$("vol").oninput=()=>{ if(bus) bus.gain.value=+$("vol").value };
+
+// ---------- Schermo intero e schermo sempre acceso ----------
+$("fsBtn").onclick=async()=>{
+  const st=$("stage");
+  try{ if(document.fullscreenElement) await document.exitFullscreen(); else await (st.requestFullscreen||st.webkitRequestFullscreen).call(st) }
+  catch(e){ $("fsBtn").disabled=true; $("fsBtn").title="Schermo intero non disponibile in questa pagina" }
+  keepAwake();
+};
+if(!(document.documentElement.requestFullscreen||document.documentElement.webkitRequestFullscreen)) $("fsBtn").hidden=true;
+let wake=null;
+async function keepAwake(){ try{ if(!wake&&navigator.wakeLock){ wake=await navigator.wakeLock.request("screen"); wake.addEventListener("release",()=>wake=null) } }catch(e){} }
+document.addEventListener("visibilitychange",()=>{ if(!document.hidden&&audioOn) keepAwake() });
+
+// ---------- Logic Pro via MIDI (MMC) ----------
+// La pagina comanda Logic: Play all'istante della partenza (compensato dal ritardo), Stop subito.
+// In Logic: Impostazioni progetto > Sincronizzazione > MIDI > "Listen to MMC Input"; la porta è l'IAC Driver.
+const MMC_PLAY=[0xF0,0x7F,0x7F,0x06,0x02,0xF7], MMC_STOP=[0xF0,0x7F,0x7F,0x06,0x01,0xF7];
+const lg={access:null,out:null,timer:0};
+const lgSave=(k,v)=>{ try{ localStorage.setItem("cb-lg-"+k,v) }catch(e){} };
+const lgLoad=k=>{ try{ return localStorage.getItem("cb-lg-"+k) }catch(e){ return null } };
+function lgMsg(t,err){ const m=$("lgMsg"); m.textContent=t; m.className="msg"+(err?" err":"") }
+const lgDelay=()=>+$("lgDelay").value||0;
+const lgActive=()=>$("lgOn").checked&&!!lg.out;
+function lgFillPorts(){
+  const sel=$("lgPort"), outs=lg.access?[...lg.access.outputs.values()]:[], want=lgLoad("port")||sel.value;
+  sel.innerHTML="";
+  outs.forEach(o=>{ const op=document.createElement("option"); op.value=o.id; op.textContent=o.name; sel.append(op) });
+  if(!outs.length){ lg.out=null; sel.innerHTML='<option value="">-</option>'; lgMsg("Nessuna porta MIDI di uscita: attiva l'IAC Driver in Configurazione Audio MIDI.",true); return }
+  const pick=outs.find(o=>o.id===want)||outs.find(o=>/IAC/i.test(o.name))||outs[0];
+  sel.value=pick.id; lg.out=pick; lgMsg("Logic collegato su "+pick.name+". Barra spaziatrice = Via / Pausa anche per Logic.");
+}
+async function lgConnect(){
+  if(!navigator.requestMIDIAccess){ lgMsg("Questo browser non supporta la Web MIDI: usa Chrome o Edge.",true); return false }
+  try{
+    if(!lg.access){ lg.access=await navigator.requestMIDIAccess({sysex:true}); lg.access.onstatechange=()=>{ if($("lgOn").checked) lgFillPorts() } }
+    lgFillPorts(); return !!lg.out;
+  }catch(e){
+    lgMsg(e&&e.name==="SecurityError"?"Il MIDI è bloccato in questa pagina (forse perché è incorporata in un sito): aprila direttamente, fuori da Google Sites.":"Permesso MIDI negato o non disponibile ("+((e&&e.name)||"errore")+").",true);
+    return false;
+  }
+}
+// ms = anticipo rispetto a ora (0 = subito); il timestamp della Web MIDI fa partire il messaggio con precisione
+function lgSend(bytes,ms){
+  if(!lg.out) return false;
+  try{ lg.out.send(bytes,ms>0?performance.now()+ms:0); return true }
+  catch(e){ lgMsg("Invio a Logic non riuscito: "+e.message,true); return false }
+}
+function lgCancel(){ clearTimeout(lg.timer); lg.timer=0 }
+function lgPlayAt(anchorServer){
+  lgCancel(); if(!lgActive()) return;
+  const left=()=>anchorServer-serverNow()-lgDelay();
+  const fire=()=>{ lg.timer=0; lgSend(MMC_PLAY,Math.max(0,left())) };
+  const wait=left()-60;
+  if(wait<=0) fire(); else lg.timer=setTimeout(fire,wait);
+}
+function lgStopNow(){ lgCancel(); if(lgActive()) lgSend(MMC_STOP,0) }
+$("lgOn").addEventListener("change",async()=>{
+  lgSave("on",$("lgOn").checked?"1":"0");
+  if($("lgOn").checked){ if(!(await lgConnect())){ $("lgOn").checked=false; lgSave("on","0") } }
+  else{ lgCancel(); lgMsg("Collegamento a Logic spento. Barra spaziatrice = Via / Pausa.") }
+});
+$("lgPort").addEventListener("change",()=>{
+  const o=lg.access&&lg.access.outputs.get($("lgPort").value);
+  if(o){ lg.out=o; lgSave("port",o.id); lgMsg("Logic collegato su "+o.name+".") }
+});
+$("lgDelay").addEventListener("change",()=>{ lgSave("delay",$("lgDelay").value); $("lgDelay").blur() });
+$("lgTest").onclick=async()=>{
+  if(!lg.out&&!(await lgConnect())) return;
+  lgSend(MMC_PLAY,0); lgMsg("Prova: Play inviato, Stop tra 2 secondi…");
+  setTimeout(()=>{ lgSend(MMC_STOP,0); lgMsg("Prova finita. Se Logic è partito e si è fermato, il collegamento funziona.") },2000);
+};
+{ const d=lgLoad("delay"); if(d!==null) $("lgDelay").value=d; $("lgOn").checked=lgLoad("on")==="1" }
+function lgRestore(){ if($("lgOn").checked&&!lg.out) lgConnect().then(ok=>{ if(!ok){ $("lgOn").checked=false; lgSave("on","0") } }) }
+
+// Barra spaziatrice in regia: Via da fermo, Pausa mentre suona, Riprendi in pausa (non quando scrivi in un campo)
+document.addEventListener("keydown",e=>{
+  if(e.code!=="Space"||$("regia").hidden) return;
+  const t=e.target, tag=t&&t.tagName;
+  if(tag==="TEXTAREA"||tag==="SELECT"||(tag==="INPUT"&&/^(text|number|password|search|email|url|tel)$/.test(t.type))||(t&&t.isContentEditable)) return;
+  e.preventDefault(); if(e.repeat) return;
+  if(live&&live.status==="playing") $("pauseBtn").click(); else $("goBtn").click();
+});
+document.addEventListener("keyup",e=>{ if(e.code==="Space"&&!$("regia").hidden&&e.target&&e.target.tagName==="BUTTON") e.preventDefault() });
+["from","countIn"].forEach(id=>$(id).addEventListener("change",()=>$(id).blur()));
+
+// ---------- Regia ----------
+let pw=""; try{ pw=sessionStorage.getItem("cb-regia-pw")||"" }catch(e){}
+let sending=false, seekDrag=false;
+function showRegia(on){ $("regia").hidden=!on; $("ctl").hidden=!on; $("regiaLink").hidden=on; $("loginBox").hidden=true; if(on){ renderBookmarks(); lgRestore() } else lgCancel() }
+// Comandi sul riquadro (solo regia): toccando il riquadro da fermo parte il Via, in pausa si riprende;
+// mentre suona un tocco mostra soltanto i comandi, così un tocco involontario non interrompe nulla.
+const stageEl=$("stage"); let ctlTimer=0;
+function revealCtl(){ stageEl.classList.add("show"); clearTimeout(ctlTimer); ctlTimer=setTimeout(()=>stageEl.classList.remove("show"),2500) }
+stageEl.addEventListener("mousemove",()=>{ if(!$("ctl").hidden) revealCtl() });
+stageEl.addEventListener("click",e=>{
+  if($("ctl").hidden||e.target.closest(".ctl")) return;
+  if(live&&live.status==="playing") revealCtl();
+  else if(!$("goBtn").disabled) $("goBtn").click();
+});
+$("regiaLink").onclick=()=>{ $("loginBox").hidden=false; $("regiaLink").hidden=true; $("pw").focus() };
+$("loginCancel").onclick=()=>{ $("loginBox").hidden=true; $("regiaLink").hidden=false };
+$("loginBtn").onclick=()=>{ pw=$("pw").value; if(!pw) return; try{sessionStorage.setItem("cb-regia-pw",pw)}catch(e){} showRegia(true); regiaMsg("Pronto. La password viene verificata al primo comando.") };
+$("pw").addEventListener("keydown",e=>{ if(e.key==="Enter") $("loginBtn").click() });
+$("logoutBtn").onclick=()=>{ pw=""; try{sessionStorage.removeItem("cb-regia-pw")}catch(e){} showRegia(false) };
+function regiaMsg(t,err){ const m=$("regiaMsg"); m.textContent=t; m.className="msg"+(err?" err":"") }
+
+async function send(st,label,checkCd){
+  if(sending) return false; sending=true; let ok=false;
+  st={...st}; if(typeof st.cd!=="boolean") st.cd=cdOn();   // ogni comando conserva la scelta sul conto 3-2-1
+  regiaButtons();
+  regiaMsg("Invio: "+label+"…");
+  try{
+    const j=await api({a:"set",pw,state:JSON.stringify(st)});
+    if(!j.ok){
+      regiaMsg(j.error||"Comando rifiutato",true);
+      if(/password/i.test(j.error||"")){ pw=""; try{sessionStorage.removeItem("cb-regia-pw")}catch(e){} setTimeout(()=>{showRegia(false);$("loginBox").hidden=false;$("regiaLink").hidden=true},1200) }
+    } else {
+      ok=true; applyState(j.state);
+      if(checkCd&&!(j.state&&j.state.cd===st.cd)) regiaMsg("Inviato, ma lo script di Drive non salva questa impostazione: va aggiornato contabattute-drive.gs.",true);
+      else regiaMsg(label+": inviato a tutti.");
+    }
+  }catch(e){ regiaMsg("Comando non inviato: "+e.message,true) }
+  finally{ sending=false; regiaButtons() }
+  return ok;
+}
+$("cdBtn").onclick=()=>{
+  const v=!cdOn(), base=live?{...live}:{status:"stopped",from:firstN,countIn:ciVal()};
+  send({...base,cd:v},"Conto 3-2-1 "+(v?"attivo":"disattivato"),true);
+};
+const startAt=(from,countIn,pos)=>Math.round(serverNow()+leadMs(from,countIn,pos));
+const ciVal=()=>+$("countIn").value;
+function currentPos(){ const p=phase(); return p.idle?0:Math.max(0,p.t) }
+function goFrom(n){
+  n=clampBar(n); const wasPlaying=live&&live.status==="playing";
+  const st={status:"playing",from:n,countIn:ciVal(),anchorPos:0,anchorServer:startAt(n,ciVal(),0)};
+  if(wasPlaying){ if(lgActive()){ lgStopNow(); lgMsg("Salto di battuta: Logic fermato. Riposizionalo e premi di nuovo.",true) } }   // la pagina non sposta Logic
+  else lgPlayAt(st.anchorServer);
+  send(st,`Via dalla battuta ${n}`).then(ok=>{ if(!ok) lgStopNow() });
+}
+function setFrom(n){ n=clampBar(n); send({status:"stopped",from:n,countIn:ciVal()},`Pronti dalla battuta ${n}`) }
+$("goBtn").onclick=()=>{
+  if(live&&live.status==="paused"){
+    const st={...live,status:"playing",anchorServer:startAt(clampBar(live.from),live.countIn,live.anchorPos)};
+    lgPlayAt(st.anchorServer); send(st,"Ripresa").then(ok=>{ if(!ok) lgStopNow() });
+  }
+  else goFrom(parseInt($("from").value,10));
+};
+$("pauseBtn").onclick=()=>{ if(live&&live.status==="playing"){ lgStopNow(); send({...live,status:"paused",anchorPos:currentPos()},"Pausa") } };
+$("stopBtn").onclick=()=>{ if(live){ lgStopNow(); send({status:"stopped",from:live.from,countIn:live.countIn},"Stop") } };
+function gotoBar(n){
+  n=clampBar(n); $("from").value=n; $("seek").value=n; seekLabel(n);
+  if(live&&live.status==="playing") goFrom(n); else setFrom(n);
+}
+$("from").addEventListener("change",()=>gotoBar(parseInt($("from").value,10)));
+$("countIn").addEventListener("change",()=>{ if(!live||live.status==="stopped") setFrom(parseInt($("from").value,10)) });
+$("seek").addEventListener("input",()=>{ seekDrag=true; seekLabel($("seek").value) });
+$("seek").addEventListener("change",()=>{ seekDrag=false; gotoBar(+$("seek").value) });
+function seekLabel(n){ $("seekLbl").textContent=`Battuta ${n} di ${lastN}`; highlightBookmark(+n) }
+function regiaButtons(){
+  const st=live?live.status:"stopped";
+  stageEl.classList.toggle("run",st==="playing");
+  const on=cdOn(), cb=$("cdBtn"), ct="⏱ Conto 3-2-1 per tutti: "+(on?"sì":"no");
+  if(cb.textContent!==ct){ cb.textContent=ct; cb.setAttribute("aria-pressed",String(on)) }
+  cb.disabled=sending;
+  $("goBtn").textContent=st==="paused"?"▶ Riprendi":"▶ Via";
+  $("goBtn").disabled=sending||st==="playing";
+  $("pauseBtn").disabled=sending||st!=="playing";
+  $("stopBtn").disabled=sending||st==="stopped";
+}
+let lastFollow="";
+function followRegia(p){
+  if($("regia").hidden) return;
+  regiaButtons();
+  let n=live?clampBar(live.from):firstN;
+  if(!p.idle){ const bi=beatAt(p.t); if(bi>=0){ const b=p.tl.bars[p.tl.beats[bi].bar]; if(!b.countIn) n=b.n } }
+  const key=n+"|"+(live?live.seq:0);
+  if(key===lastFollow) return; lastFollow=key;
+  if(!seekDrag){ $("seek").value=n; seekLabel(n) }
+  if(document.activeElement!==$("from")&&live) $("from").value=clampBar(live.from);
+  if(live&&document.activeElement!==$("countIn")) $("countIn").value=String(live.countIn);
+}
+let bmList=[];
+function renderBookmarks(){
+  bmList=[{bar:firstN,text:"Inizio"}].concat(marks.filter(m=>m.bar>firstN&&m.bar<=lastN));
+  const box=$("bookmarks"); box.innerHTML="";
+  bmList.forEach(m=>{
+    const b=document.createElement("button"); b.type="button"; b.className="bm"; b.dataset.bar=m.bar; b.title=`Vai alla battuta ${m.bar}`;
+    const n=document.createElement("b"); n.textContent=m.bar; const s=document.createElement("span"); s.textContent=m.text;
+    b.append(n,s); b.onclick=()=>gotoBar(m.bar); box.append(b);
+  });
+  highlightBookmark(+$("seek").value);
+}
+function highlightBookmark(n){
+  let cur=null; for(const m of bmList){ if(m.bar<=n) cur=m.bar; else break }
+  document.querySelectorAll("#bookmarks .bm").forEach(b=>b.classList.toggle("on",+b.dataset.bar===cur));
+}
+
+// ---------- Avvio ----------
+async function init(){
+  await (document.fonts?document.fonts.ready:Promise.resolve());
+  message(["Caricamento del brano…"]);
+  if(!CONFIG.appsScriptUrl){ message(["Diretta non configurata","Inserisci l'URL dello script in appsScriptUrl"]); updateConn(); return }
+  try{ const proj=await fetchProject(); midi=await fetchMidi(proj) }
+  catch(e){ message(["Impossibile caricare il brano",e.message]); return }
+  marks=CONFIG.marks.filter(m=>m&&m.text&&Number.isFinite(+m.bar)).map(m=>({bar:+m.bar,text:m.text})).sort((a,b)=>a.bar-b.bar);
+  const full=buildTimeline(midi,{firstBar:CONFIG.firstBar,compound:CONFIG.compoundDotted,cut:CONFIG.cutDouble?2:1,countIn:0});
+  firstN=full.allBars[0].n; lastN=full.allBars[full.allBars.length-1].n;
+  for(const id of ["from","seek"]){ $(id).min=firstN; $(id).max=lastN; $(id).value=firstN }
+  seekLabel(firstN);
+  if(pw) showRegia(true);
+  poll(); frame();
+}
+init();
+</script>
+</body>
+</html>
