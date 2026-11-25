@@ -126,6 +126,9 @@ label.chk{display:flex;flex-direction:row;align-items:center;gap:8px;flex:0 0 au
           <input type="number" id="folDelay" value="0" step="5">
         </label>
       </div>
+      <div class="row">
+        <button type="button" id="folArm">⏳ Aspetta il click esterno e parti</button>
+      </div>
       <div class="meter" aria-hidden="true"><i id="folLv"></i><b id="folTh"></b></div>
       <p class="msg" id="folMsg">Spento. Ascolta con il microfono un click esterno e regola la velocità perché lo segua.</p>
     </div>
@@ -649,7 +652,7 @@ document.addEventListener("keyup",e=>{ if(e.code==="Space"&&!$("regia").hidden&&
 // ---------- Regia ----------
 let pw=""; try{ pw=sessionStorage.getItem("cb-regia-pw")||"" }catch(e){}
 let sending=false, seekDrag=false;
-function showRegia(on){ $("regia").hidden=!on; $("ctl").hidden=!on; $("regiaLink").hidden=on; $("loginBox").hidden=true; if(on){ renderBookmarks(); lgRestore() } else { lgCancel(); if(fol.on){ fol.on=false; $("folOn").checked=false; folStop() } } }
+function showRegia(on){ $("regia").hidden=!on; $("ctl").hidden=!on; $("regiaLink").hidden=on; $("loginBox").hidden=true; if(on){ renderBookmarks(); lgRestore() } else { lgCancel(); armOff(); if(fol.on){ fol.on=false; $("folOn").checked=false; folStop() } } }
 // Comandi sul riquadro (solo regia): toccando il riquadro da fermo parte il Via, in pausa si riprende;
 // mentre suona un tocco mostra soltanto i comandi, così un tocco involontario non interrompe nulla.
 const stageEl=$("stage"); let ctlTimer=0;
@@ -743,7 +746,7 @@ class ClickDet extends AudioWorkletProcessor{
   }
 }
 registerProcessor("click-det",ClickDet);`;
-const fol={on:false,ctx:null,stream:null,src:null,node:null,mute:null,loaded:false,hist:[],lastApply:0,myAnchor:null,
+const fol={arm:null,on:false,ctx:null,stream:null,src:null,node:null,mute:null,loaded:false,hist:[],lastApply:0,myAnchor:null,
   accepted:0,rejected:0,lv:0,bg:0,sens:5,rms:null};
 function folMsg(t,err){ const m=$("folMsg"); m.textContent=t; m.className="msg"+(err?" err":"") }
 function folMeter(){
@@ -778,6 +781,7 @@ function folOnset(on){
   const perf=performance.now()-(fol.ctx.currentTime-on)*1000;
   const ts=performance.timeOrigin+perf+(clock.off||0)-(+$("folDelay").value||0);   // istante del colpo, ora del server
   folFlash();
+  if(fol.arm){ armOnset(ts); return }
   if(!fol.on||!live||live.status!=="playing"||clock.off==null||ts<live.anchorServer) return;
   const tl=timelineFor(clampBar(live.from),live.countIn);
   const P=live.anchorPos+(ts-live.anchorServer)/1000*rateNow();
@@ -800,7 +804,56 @@ function folTryApply(){
   send({...live,anchorPos:f.pos,anchorServer:fol.myAnchor,rate:r},"Segue il click esterno ("+Math.round(r*100)+"%)","rate");
 }
 // un comando nuovo (Via, Pausa, salto…) azzera i colpi raccolti; le correzioni fatte da qui no
-function folNewState(st){ if(st.status!=="playing"||st.anchorServer!==fol.myAnchor) fol.hist.length=0 }
+function folNewState(st){ if(fol.arm&&st.status==="playing") armOff("Un altro comando ha avviato la pagina: attesa annullata."); if(st.status!=="playing"||st.anchorServer!==fol.myAnchor) fol.hist.length=0 }
+
+// ---------- Attesa del click esterno e partenza automatica ----------
+// La pagina resta ferma e ascolta la battuta di preparazione del click esterno (tanti colpi quanti i battiti della battuta, 4 in 4/4).
+// Dal passo dei colpi ricava velocità e istante del primo battito e parte da sola, agganciata (l'istante di partenza è un'ora del server:
+// anche se il comando arriva con ritardo, tutti i dispositivi calcolano la stessa posizione).
+function armOff(msg){ if(!fol.arm) return; fol.arm=null; regiaButtons(); if(msg) folMsg(msg) }
+function armNeed(){
+  try{ const tl=timelineFor(clampBar(parseInt($("from").value,10)||firstN),ciVal()); return Math.max(2,prepInfo(tl,0).offs.length) }
+  catch(e){ return 4 }
+}
+function armOnset(ts){
+  const a=fol.arm; if(!a) return;
+  if(clock.off==null){ folMsg("Collegamento in corso…"); return }
+  const T=a.ts, n=T.length;
+  if(n){
+    const gap=ts-T[n-1];
+    let bad=gap>2200||gap<250;                                   // fuori da 27–240 bpm: non è il click di preparazione
+    if(!bad&&n>=2){ const m=(T[n-1]-T[0])/(n-1); if(Math.abs(gap/m-1)>.25) bad=true }
+    if(bad){ T.length=0; if(n>1) folMsg("Colpo irregolare: ricomincio a contare.") }
+  }
+  T.push(ts);
+  const need=a.need;
+  if(T.length<need){ folMsg("In attesa del click esterno: colpo "+T.length+" di "+need+"…"); return }
+  // retta ts = a0 + g·i sui colpi della preparazione; il primo battito della musica è l'indice «need»
+  const m=T.length; let mi=(m-1)/2, mt=0; for(const t of T) mt+=t; mt/=m;
+  let sxx=0,sxy=0; T.forEach((t,i)=>{ sxx+=(i-mi)*(i-mi); sxy+=(i-mi)*(t-mt) });
+  const g=sxy/sxx, a0=mt-g*mi, tStart=a0+g*need;
+  fol.arm=null;
+  const tl=timelineFor(clampBar(a.from),a.countIn), bs=prepInfo(tl,0), beats=bs.offs.length;
+  const r=bs.barSec/(beats*g/1000);
+  if(!(r>=.5&&r<=1.5)){
+    regiaButtons(); folMsg("Il click esterno ("+Math.round(60000/g)+" colpi/min) è troppo diverso dal tempo del brano (velocità "+Math.round(r*100)+"%, ammessa 50–150%): non parto. Riprova o controlla la battuta di partenza.",true); return }
+  const st={status:"playing",from:clampBar(a.from),countIn:a.countIn,anchorPos:0,anchorServer:Math.round(tStart)};
+  if(Math.abs(r-1)>.002) st.rate=r;
+  fol.hist.length=0; fol.myAnchor=st.anchorServer; fol.lastApply=Date.now(); fol.accepted=fol.rejected=0;
+  regiaButtons(); folMsg("Click esterno agganciato ("+Math.round(60000/g)+" colpi/min, velocità "+Math.round(r*100)+"%): parto.");
+  send(st,"Partenza sul click esterno",st.rate?"rate":undefined);
+}
+$("folArm").onclick=async()=>{
+  if(fol.arm){ armOff("Attesa annullata."); return }
+  if(sending||(live&&live.status==="playing")) return;
+  if(!fol.on){
+    fol.accepted=fol.rejected=0; fol.rms=null; fol.on=true; $("folOn").checked=true;
+    if(!(await folStart())){ fol.on=false; $("folOn").checked=false; return }
+  }
+  fol.arm={ts:[],need:armNeed(),from:clampBar(parseInt($("from").value,10)||firstN),countIn:ciVal()};
+  regiaButtons();
+  folMsg("In attesa del click esterno: "+fol.arm.need+" colpi regolari e la pagina parte da sola"+(audioOn?". Attenzione: il click di questa pagina è acceso, il microfono può sentirlo.":"."), audioOn);
+};
 async function folStart(){
   if(!window.isSecureContext||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
     folMsg("Il microfono non è disponibile in questa pagina: serve un indirizzo https e Chrome o Edge, aperta direttamente (non dentro Google Sites).",true); return false }
@@ -831,7 +884,7 @@ $("folOn").addEventListener("change",async()=>{
     if(!(await folStart())){ fol.on=false; $("folOn").checked=false; return }
     if(audioOn) folMsg("In ascolto. Attenzione: il click di questa pagina è acceso e il microfono può sentirlo: spegnilo o usa le cuffie.",true);
     else folMsg("In ascolto. Premi Via quando il click esterno sta per partire sul primo battito: dopo i primi 4 impulsi la pagina si aggancia da sola.");
-  } else { fol.on=false; folStop(); folMsg("Spento. Ascolta con il microfono un click esterno e regola la velocità perché lo segua.") }
+  } else { armOff(); fol.on=false; folStop(); folMsg("Spento. Ascolta con il microfono un click esterno e regola la velocità perché lo segua.") }
 });
 $("folSens").addEventListener("input",()=>{ fol.sens=+$("folSens").value; lgSave("fsens",$("folSens").value); if(fol.node) fol.node.port.postMessage({sens:fol.sens}); folMeter() });
 $("folDelay").addEventListener("change",()=>{ lgSave("fdelay",$("folDelay").value); $("folDelay").blur() });
@@ -877,6 +930,7 @@ function regiaButtons(){
   cb.disabled=sending;
   $("goBtn").textContent=st==="paused"?"▶ Riprendi":"▶ Via";
   $("goBtn").disabled=sending||st==="playing";
+  { const fb=$("folArm"); fb.disabled=st==="playing"||(sending&&!fol.arm); const t=fol.arm?"✖ Annulla l'attesa del click":"⏳ Aspetta il click esterno e parti"; if(fb.textContent!==t) fb.textContent=t }
   $("pauseBtn").disabled=sending||st!=="playing";
   $("stopBtn").disabled=sending||st==="stopped";
 }
